@@ -1,0 +1,882 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MindArena — machine grandmaster circuit</title>
+<style>
+  :root {
+    --bg: #0a0a0f; --panel: #13131c; --panel2: #1a1a26; --line: #262635;
+    --text: #e8e8f0; --dim: #7a7a92; --accent: #7c5cff; --accent2: #00e5a0;
+    --white: #f0f0f5; --black: #1a1a2e; --good: #00e5a0; --bad: #ff4d6d;
+    --warn: #ffb84d; --live: #00e5a0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "SF Pro Display", Inter, system-ui, sans-serif; }
+  html { height: 100%; }
+  body { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+
+  /* banner */
+  .banner { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+    background: linear-gradient(180deg, #16161f, #101019); border-bottom: 1px solid var(--line); }
+  .banner .logo { font-size: 24px; color: var(--accent); letter-spacing: -2px; }
+  .banner h1 { font-size: 16px; font-weight: 700; letter-spacing: 2px; }
+  .banner .sub { color: var(--dim); font-size: 11px; letter-spacing: 1px; margin-left: 8px; }
+  .banner .status { margin-left: auto; padding: 4px 12px; border-radius: 4px;
+    font-size: 11px; font-weight: 700; letter-spacing: 1.5px;
+    background: #1e1e2e; color: var(--dim); }
+  .banner .status.LIVE, .banner .status.ERROR { color: var(--live); }
+  .banner .status.DONE { color: var(--good); }
+  .banner .status.PAUSED { color: var(--warn); }
+  .banner .status.LIVE::before, .banner .status.ERROR::before { content: "● "; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .banner button { background: transparent; color: var(--dim); border: 1px solid var(--line);
+    padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-left: 8px; }
+  .banner button:hover { color: var(--text); border-color: var(--accent); }
+
+  /* main */
+  .main { display: grid; grid-template-columns: 1fr 380px; gap: 0; flex: 1 1 auto; min-height: 0; }
+  .stage { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px; min-height: 0; background: radial-gradient(ellipse at center, #12121c 0%, #08080c 100%); }
+  .stage .scorebar { display: flex; align-items: center; gap: 20px; margin-bottom: 16px; }
+  .stage .player { display: flex; flex-direction: column; align-items: center; min-width: 160px; }
+  .stage .player .color { font-size: 10px; letter-spacing: 3px; color: var(--dim); }
+  .stage .player .name { font-size: 18px; font-weight: 700; margin: 2px 0; }
+  .stage .player .rating { font-size: 11px; color: var(--accent); }
+  .stage .vs { display: flex; flex-direction: column; align-items: center; }
+  .stage .vs .format { font-size: 10px; letter-spacing: 2px; color: var(--dim); }
+  .stage .vs .score { font-size: 28px; font-weight: 800; letter-spacing: 1px; }
+  .stage .vs .round { font-size: 10px; color: var(--dim); margin-top: 2px; }
+
+  /* board */
+  .board-wrap { position: relative; }
+  .board { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+    width: min(58vh, 520px); height: min(58vh, 520px); border: 2px solid var(--line);
+    border-radius: 4px; box-shadow: 0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(124,92,255,0.08); }
+  .sq { display: flex; align-items: center; justify-content: center; position: relative;
+    font-size: calc(min(58vh, 520px) / 11); line-height: 1; user-select: none; }
+  .sq.light { background: #e8e2d4; }
+  .sq.dark { background: #7c6f55; }
+  .sq.last { box-shadow: inset 0 0 0 3px rgba(255,184,77,0.7); }
+  .sq.check { background: #ff6b6b !important; }
+  .piece { transition: transform 0.25s ease; }
+  .piece.w { color: #fff; text-shadow: 0 0 2px #000, 0 1px 2px rgba(0,0,0,0.4); }
+  .piece.b { color: #1a1a2e; text-shadow: 0 0 1px #fff, 0 1px 1px rgba(255,255,255,0.2); }
+  .coord { position: absolute; font-size: 9px; color: rgba(0,0,0,0.45); }
+  .coord.file { bottom: 1px; right: 3px; }
+  .coord.rank { top: 1px; left: 3px; }
+  .sq.dark .coord { color: rgba(255,255,255,0.4); }
+
+  .say { margin-top: 14px; min-height: 24px; max-width: 520px; text-align: center;
+    font-style: italic; color: var(--dim); font-size: 13px; }
+  .say .who { color: var(--accent2); font-style: normal; font-weight: 600; }
+
+  /* sidebar */
+  .sidebar { display: grid; grid-template-rows: auto 1fr; border-left: 1px solid var(--line);
+    background: var(--panel); min-height: 0; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
+  .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .card .pname { font-size: 12px; font-weight: 700; }
+  .card .pcolor { font-size: 9px; letter-spacing: 2px; color: var(--dim); }
+  .card .pmodel { font-size: 10px; color: var(--accent); margin: 4px 0 8px; word-break: break-all; }
+  .card .row { display: flex; justify-content: space-between; font-size: 11px; margin: 2px 0; }
+  .card .row .k { color: var(--dim); }
+  .card .row .v { font-variant-numeric: tabular-nums; }
+  .card .wdl { font-size: 13px; font-weight: 700; letter-spacing: 1px; margin: 6px 0; }
+  .card .wdl .w { color: var(--good); } .card .wdl .d { color: var(--dim); } .card .wdl .l { color: var(--bad); }
+
+  .log-section { display: flex; flex-direction: column; border-top: 1px solid var(--line); min-height: 0; }
+  .log-section h3 { padding: 10px 12px 6px; font-size: 11px; letter-spacing: 2px; color: var(--dim); }
+  .log { flex: 1; overflow-y: auto; padding: 0 12px 12px; font-family: "SF Mono", Menlo, monospace; font-size: 11px; min-height: 120px; }
+  .log .entry { padding: 3px 0; border-bottom: 1px solid rgba(38,38,53,0.5); color: var(--text); }
+  .log .entry .t { color: var(--dim); margin-right: 6px; }
+  .log .entry.info { color: var(--text); }
+  .log .entry.warn { color: var(--warn); }
+  .log .entry.error { color: var(--bad); }
+  .log .entry.thinking { color: var(--accent); opacity: 0.7; }
+  .log .entry.move { color: var(--accent2); }
+
+  /* controls */
+  .controls { display: flex; align-items: center; gap: 8px; padding: 12px 20px;
+    background: var(--panel); border-top: 1px solid var(--line); flex-shrink: 0;
+    position: sticky; bottom: 0; z-index: 10; }
+  .controls button { padding: 8px 16px; border-radius: 4px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); cursor: pointer; font-size: 13px; font-weight: 600; }
+  .controls button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .controls button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .controls button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .controls button.primary:hover:not(:disabled) { background: #6b4dff; color: #fff; }
+  .controls .spacer { flex: 1; }
+  .controls label { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dim); }
+  .controls input[type=range] { width: 120px; accent-color: var(--accent); }
+  .controls .speed-v { font-variant-numeric: tabular-nums; min-width: 40px; }
+
+  /* settings drawer */
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 460px; max-width: 90vw;
+    background: var(--panel); border-left: 1px solid var(--line);
+    transform: translateX(100%); transition: transform 0.25s ease; z-index: 100;
+    overflow-y: auto; padding: 20px; }
+  .drawer.open { transform: translateX(0); }
+  .drawer h2 { font-size: 16px; margin-bottom: 16px; letter-spacing: 1px; }
+  .drawer .close { position: absolute; top: 16px; right: 20px; background: none; border: none;
+    color: var(--dim); font-size: 18px; cursor: pointer; }
+  .drawer .group { border: 1px solid var(--line); border-radius: 6px; padding: 14px; margin-bottom: 14px; background: var(--panel2); }
+  .drawer .group legend, .drawer .group > h3 { font-size: 11px; letter-spacing: 2px; color: var(--dim); margin-bottom: 10px; }
+  .drawer .field { margin-bottom: 10px; }
+  .drawer .field label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+  .drawer .field input, .drawer .field select, .drawer .field textarea {
+    width: 100%; padding: 7px 10px; background: #0e0e16; border: 1px solid var(--line);
+    color: var(--text); border-radius: 4px; font-size: 13px; font-family: inherit; }
+  .drawer .field textarea { font-family: "SF Mono", Menlo, monospace; font-size: 11px; min-height: 80px; }
+  .drawer .field input:focus, .drawer .field select:focus, .drawer .field textarea:focus {
+    outline: none; border-color: var(--accent); }
+  .drawer .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .drawer .actions { display: flex; gap: 8px; margin-top: 16px;
+    position: sticky; bottom: 0; background: var(--panel); padding: 12px 0; margin: 16px -20px -20px; padding-left: 20px; padding-right: 20px; }
+  .drawer .actions button { flex: 1; padding: 10px; border-radius: 4px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); cursor: pointer; font-weight: 600; }
+  .drawer .actions button.save { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .drawer .hint { font-size: 10px; color: var(--dim); margin-top: 3px; }
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 99; opacity: 0;
+    transition: opacity 0.25s; pointer-events: none; }
+  .scrim.show { opacity: 1; pointer-events: auto; }
+
+  .move-list { margin-top: 8px; max-height: 80px; overflow-y: auto; font-family: "SF Mono", Menlo, monospace;
+    font-size: 11px; color: var(--dim); padding: 6px 8px; background: #0e0e16; border-radius: 4px; }
+  .move-list .ply { display: inline-block; width: 24px; color: var(--dim); }
+  .move-list .mv { color: var(--text); margin-right: 6px; }
+
+  /* save confirmation flash */
+  .drawer .actions button.save.saved { background: var(--good); border-color: var(--good); color: #04140d; }
+  .drawer .actions button.save.saved::after { content: " ✓"; }
+
+  /* ---- responsive: phones / narrow viewports ---- */
+  /* Switch to a single scrolling column. Board on top, cards+log below, controls pinned at bottom. */
+  @media (max-width: 1024px) {
+    /* compact header — hide subtitle, shrink padding */
+    .banner { padding: 6px 12px; gap: 8px; }
+    .banner h1 { font-size: 13px; letter-spacing: 1px; }
+    .banner .sub { display: none; }
+    .banner .logo { font-size: 18px; }
+    .banner .status { font-size: 10px; padding: 3px 8px; }
+    .banner button { padding: 4px 8px; font-size: 11px; margin-left: 4px; }
+    .main { grid-template-columns: 1fr; }
+    .stage { padding: 8px; }
+    .stage .scorebar { gap: 8px; margin-bottom: 6px; flex-wrap: wrap; justify-content: center; }
+    .stage .player { min-width: 0; }
+    .stage .player .color { font-size: 9px; letter-spacing: 2px; }
+    .stage .player .name { font-size: 13px; }
+    .stage .player .rating { font-size: 10px; }
+    .stage .vs .format { font-size: 9px; }
+    .stage .vs .score { font-size: 20px; }
+    .stage .vs .round { font-size: 9px; }
+    .board { width: min(94vw, 52dvh, 440px); height: min(94vw, 52dvh, 440px); }
+    .sq { font-size: calc(min(94vw, 440px) / 11); }
+    .say { font-size: 12px; max-width: 94vw; margin-top: 6px; }
+    .sidebar { border-left: none; border-top: 1px solid var(--line); }
+    .cards { grid-template-columns: 1fr 1fr; gap: 6px; padding: 6px; }
+    .card { padding: 8px; }
+    .card .pname { font-size: 11px; }
+    .card .row { font-size: 10px; }
+    .log { font-size: 10px; min-height: 80px; max-height: 26vh; }
+    .controls { padding: 6px 8px; gap: 6px; flex-wrap: wrap; }
+    .controls button { padding: 9px 10px; font-size: 12px; }
+    .controls label { font-size: 10px; }
+    .controls input[type=range] { width: 80px; }
+    .drawer { width: 100vw; max-width: 100vw; padding: 16px; }
+    .drawer .two { grid-template-columns: 1fr 1fr; gap: 8px; }
+  }
+  @media (max-width: 380px) {
+    .banner { padding: 5px 8px; }
+    .banner h1 { font-size: 12px; }
+    .stage .vs .score { font-size: 18px; }
+    .controls { gap: 4px; }
+    .controls button { padding: 8px 7px; font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="banner">
+  <span class="logo">▚</span>
+  <h1>MINDARENA<span class="sub">local · the machine grandmaster circuit</span></h1>
+  <span class="status" id="status">IDLE</span>
+  <button id="btn-settings">⚙ Settings</button>
+</div>
+
+<div class="main">
+  <div class="stage">
+    <div class="scorebar">
+      <div class="player" id="p0">
+        <div class="color">WHITE</div>
+        <div class="name">—</div>
+        <div class="rating">39</div>
+      </div>
+      <div class="vs">
+        <div class="format" id="format">BEST OF 4</div>
+        <div class="score" id="score">0–0</div>
+        <div class="round" id="round">Game 0 · Series 0</div>
+      </div>
+      <div class="player" id="p1">
+        <div class="color">BLACK</div>
+        <div class="name">—</div>
+        <div class="rating">39</div>
+      </div>
+    </div>
+    <div class="board-wrap">
+      <div class="board" id="board"></div>
+    </div>
+    <div class="say" id="say"></div>
+  </div>
+
+  <div class="sidebar">
+    <div class="cards" id="cards">
+      <div class="card" id="card0"></div>
+      <div class="card" id="card1"></div>
+    </div>
+    <div class="log-section">
+      <h3>BATTLE LOG</h3>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="primary" id="btn-start">▶ Start series</button>
+  <button id="btn-pause" disabled>❚❚ Pause</button>
+  <button id="btn-reset">↺ Reset</button>
+  <div class="spacer"></div>
+  <label>Turn speed
+    <input type="range" id="speed" min="0" max="3000" step="100" value="0">
+    <span class="speed-v" id="speed-v">0ms</span>
+  </label>
+</div>
+
+<!-- settings drawer -->
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer">
+  <button class="close" id="drawer-close">✕</button>
+  <h2>Settings</h2>
+
+  <div class="group">
+    <h3>PLAYER 1 (White game 1)</h3>
+    <div class="field"><label>Display name</label><input id="s-p0-label"></div>
+    <div class="two">
+      <div class="field">
+        <label>Provider</label>
+        <select id="s-p0-provider">
+          <option value="">— custom —</option>
+          <option value="ollama">Ollama Cloud</option>
+          <option value="opencode_go">OpenCode Zen GO</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <select id="s-p0-model"><option value="">— type or load —</option></select>
+      </div>
+    </div>
+    <div class="field"><label>Base URL <span style="opacity:.5">(blank = global)</span></label><input id="s-p0-baseurl" placeholder="https://…/v1"></div>
+    <div class="field"><label>API key <span style="opacity:.5">(blank = global)</span></label><input id="s-p0-apikey" type="password" placeholder="sk-…"></div>
+    <div class="two">
+      <div class="field"><label>Reasoning effort</label>
+        <select id="s-p0-effort">
+          <option>default</option><option>none</option><option>minimal</option>
+          <option>low</option><option>medium</option><option>high</option>
+          <option>xhigh</option><option>max</option>
+        </select></div>
+      <div class="field"><label>Temperature</label><input id="s-p0-temp" type="number" step="0.1" min="0" max="2"></div>
+    </div>
+    <div class="field">
+      <label>Persona / Style</label>
+      <select id="s-p0-persona">
+        <option value="default">Default (no persona)</option>
+        <option value="anand">Viswanathan Anand — calm, classical</option>
+        <option value="kasparov">Garry Kasparov — aggressive, intimidating</option>
+        <option value="fischer">Bobby Fischer — precise, cold</option>
+        <option value="carlsen">Magnus Carlsen — grinding, precise</option>
+        <option value="tal">Mikhail Tal — wild, sacrificial</option>
+        <option value="karpov">Anatoly Karpov — positional, prophylactic</option>
+        <option value="morphy">Paul Morphy — romantic, attacking</option>
+        <option value="custom">Custom (edit prompt below)</option>
+      </select>
+    </div>
+    <div class="field" id="s-p0-sys-wrap" style="display:none">
+      <label>System prompt (persona)</label>
+      <textarea id="s-p0-system" rows="3" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:8px;font-family:inherit;font-size:12px;resize:vertical"></textarea>
+    </div>
+  </div>
+
+  <div class="group">
+    <h3>PLAYER 2 (Black game 1)</h3>
+    <div class="field"><label>Display name</label><input id="s-p1-label"></div>
+    <div class="two">
+      <div class="field">
+        <label>Provider</label>
+        <select id="s-p1-provider">
+          <option value="">— custom —</option>
+          <option value="ollama">Ollama Cloud</option>
+          <option value="opencode_go">OpenCode Zen GO</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <select id="s-p1-model"><option value="">— type or load —</option></select>
+      </div>
+    </div>
+    <div class="field"><label>Base URL <span style="opacity:.5">(blank = global)</span></label><input id="s-p1-baseurl" placeholder="https://…/v1"></div>
+    <div class="field"><label>API key <span style="opacity:.5">(blank = global)</span></label><input id="s-p1-apikey" type="password" placeholder="sk-…"></div>
+    <div class="two">
+      <div class="field"><label>Reasoning effort</label>
+        <select id="s-p1-effort">
+          <option>default</option><option>none</option><option>minimal</option>
+          <option>low</option><option>medium</option><option>high</option>
+          <option>xhigh</option><option>max</option>
+        </select></div>
+      <div class="field"><label>Temperature</label><input id="s-p1-temp" type="number" step="0.1" min="0" max="2"></div>
+    </div>
+    <div class="field">
+      <label>Persona / Style</label>
+      <select id="s-p1-persona">
+        <option value="default">Default (no persona)</option>
+        <option value="anand">Viswanathan Anand — calm, classical</option>
+        <option value="kasparov">Garry Kasparov — aggressive, intimidating</option>
+        <option value="fischer">Bobby Fischer — precise, cold</option>
+        <option value="carlsen">Magnus Carlsen — grinding, precise</option>
+        <option value="tal">Mikhail Tal — wild, sacrificial</option>
+        <option value="karpov">Anatoly Karpov — positional, prophylactic</option>
+        <option value="morphy">Paul Morphy — romantic, attacking</option>
+        <option value="custom">Custom (edit prompt below)</option>
+      </select>
+    </div>
+    <div class="field" id="s-p1-sys-wrap" style="display:none">
+      <label>System prompt (persona)</label>
+      <textarea id="s-p1-system" rows="3" style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:4px;padding:8px;font-family:inherit;font-size:12px;resize:vertical"></textarea>
+    </div>
+  </div>
+
+  <div class="group">
+    <h3>MATCH</h3>
+    <div class="two">
+      <div class="field"><label>Games in series</label><input id="s-games" type="number" min="1" max="20"></div>
+      <div class="field"><label>Ply limit</label><input id="s-maxplies" type="number" min="20" max="500"></div>
+    </div>
+    <div class="two">
+      <div class="field"><label>Retries before forfeit</label><input id="s-retries" type="number" min="1" max="20"></div>
+      <div class="field"><label>Max tokens / move</label><input id="s-maxtokens" type="number" min="1000" max="64000" step="1000"></div>
+    </div>
+    <div class="two">
+      <div class="field"><label>Commentary</label>
+        <select id="s-commentary"><option value="true">On</option><option value="false">Off</option></select></div>
+      <div class="field"><label>Include prev games</label>
+        <select id="s-inclprev"><option value="true">On</option><option value="false">Off</option></select></div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="s-cancel">Cancel</button>
+    <button class="save" id="s-save">Save</button>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State + WebSocket
+// ---------------------------------------------------------------------------
+const PIECES = {P:"♙", N:"♘", B:"♗", R:"♖", Q:"♕", K:"♔",
+                p:"♟", n:"♞", b:"♝", r:"♜", q:"♛", k:"♚"};
+let state = null;
+let ws = null;
+let flipBoard = false;
+let pingTimer = null;
+let reconnectDelay = 500;
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => {
+    reconnectDelay = 500;
+    // keepalive ping every 20s — Tailscale/mobile NATs drop idle conns fast
+    if (pingTimer) clearInterval(pingTimer);
+    pingTimer = setInterval(() => {
+      if (ws && ws.readyState === 1) { try { ws.send("ping"); } catch {} }
+    }, 20000);
+  };
+  ws.onmessage = (e) => {
+    if (e.data === "pong" || e.data === "ping") return;
+    try {
+      const msg = JSON.parse(e.data);
+      handle(msg);
+    } catch (err) {}
+  };
+  ws.onclose = () => {
+    if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+    // exponential backoff up to 3s
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 3000);
+  };
+  ws.onerror = () => { try { ws.close(); } catch {} };
+}
+
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+function handle(msg) {
+  if (msg.type === "snapshot") {
+    state = msg;
+    renderAll();
+  } else if (msg.type === "log") {
+    addLog(msg.level, msg.msg);
+    // also refresh score/plies from state if we have it
+    if (state) {
+      state.plies = state.plies; // unchanged; will update on next snapshot
+    }
+  } else if (msg.type === "move") {
+    // Render board IMMEDIATELY from the move message's FEN — don't wait for snapshot.
+    // This makes the board update survive dropped snapshots on flaky mobile WS.
+    if (state) {
+      state.fen = msg.fen;
+      state.last_move = msg.san;
+      state.last_say = msg.say;
+      state.plies = msg.ply;
+      if (state.moves) state.moves.push(msg.san);
+      renderBoard(msg.fen, msg.san);
+      // update say + round counter
+      const sayEl = document.getElementById("say");
+      if (msg.say) {
+        const who = (state.players && state.players.find(p => p.model)) || {};
+        const label = state.players && state.players.length ? (msg.player_idx === 0 ? state.players[0].label : state.players[1].label) : "";
+        sayEl.innerHTML = `<span class="who">${escapeHtml(label)}:</span> "${escapeHtml(msg.say)}"`;
+      }
+      document.getElementById("round").textContent = `Game ${state.game_no} · Series ${state.plies}`;
+    }
+  }
+}
+
+function renderAll() {
+  if (!state) return;
+  const $ = id => document.getElementById(id);
+  $("status").textContent = state.status;
+  $("status").className = "status " + state.status;
+  $("score").textContent = state.series_score;
+  $("format").textContent = `BEST OF ${state.total_games}`;
+  $("round").textContent = `Game ${state.game_no} · Series ${state.plies}`;
+
+  // players in scorebar (p0 is always white-on-screen-left unless flipped)
+  for (let i = 0; i < 2; i++) {
+    const p = state.players[i];
+    if (!p) continue;
+    const el = $(`p${i}`);
+    el.querySelector(".name").textContent = p.label || "—";
+    const ratingEl = el.querySelector(".rating");
+    if (p.rating && p.rating > 0) {
+      ratingEl.textContent = p.rating;
+      ratingEl.style.display = "";
+    } else {
+      ratingEl.style.display = "none";
+    }
+    el.querySelector(".color").textContent = p.color === "white" ? "WHITE" : "BLACK";
+  }
+
+  // say
+  const sayEl = $("say");
+  if (state.last_say) {
+    const idx = (state.last_player_idx != null && state.last_player_idx >= 0)
+      ? state.last_player_idx
+      : (state.players[0] && state.players[0].color === "white" ? 0 : 1);
+    const who = state.players[idx] ? state.players[idx].label : "";
+    sayEl.innerHTML = `<span class="who">${escapeHtml(who)}:</span> "${escapeHtml(state.last_say)}"`;
+  } else {
+    sayEl.textContent = "";
+  }
+
+  // cards
+  for (let i = 0; i < 2; i++) {
+    const p = state.players[i]; if (!p) continue;
+    const c = $(`card${i}`);
+    c.innerHTML = `
+      <div class="pname">${escapeHtml(p.label)}</div>
+      <div class="pcolor">${p.color === "white" ? "WHITE" : "BLACK"}</div>
+      <div class="pmodel">${escapeHtml(p.model)}</div>
+      <div class="wdl"><span class="w">${p.wins}</span>/<span class="d">${p.draws}</span>/<span class="l">${p.losses}</span></div>
+      <div class="row"><span class="k">Moves</span><span class="v">${p.moves}</span></div>
+      <div class="row"><span class="k">Tokens</span><span class="v">${p.tokens.toLocaleString()}</span></div>
+      <div class="row"><span class="k">Reasoning</span><span class="v">${p.reasoning.toLocaleString()}</span></div>
+      <div class="row"><span class="k">Illegal</span><span class="v">${p.illegal}</span></div>
+      <div class="row"><span class="k">Cost</span><span class="v">${p.cost ? "$"+p.cost.toFixed(4) : "—"}</span></div>
+      <div class="row"><span class="k">Last</span><span class="v">${p.last_ms ? p.last_ms+"ms" : "—"}</span></div>
+      <div class="row"><span class="k">Avg</span><span class="v">${p.avg_ms ? p.avg_ms+"ms" : "—"}</span></div>`;
+  }
+
+  // board
+  renderBoard(state.fen, state.last_move);
+
+  // move list in scorebar area (append to say container's sibling? keep in card0)
+  // battle log
+  const logEl = $("log");
+  logEl.innerHTML = "";
+  for (const e of state.battle_log) {
+    const div = document.createElement("div");
+    div.className = "entry " + (e.level || "info");
+    div.innerHTML = `<span class="t">${e.t || ""}</span>${escapeHtml(e.msg)}`;
+    logEl.appendChild(div);
+  }
+  logEl.scrollTop = logEl.scrollHeight;
+
+  // controls
+  const live = state.status === "LIVE";
+  $("btn-start").disabled = live;
+  $("btn-start").textContent = live ? "▶ Running…" : "▶ Start series";
+  $("btn-pause").disabled = !live;
+  $("btn-pause").textContent = state.status === "PAUSED" ? "▶ Resume" : "❚❚ Pause";
+}
+
+function renderBoard(fen, lastSan) {
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+  const parts = fen.split(" ");
+  const rows = parts[0].split("/");
+  const files = ["a","b","c","d","e","f","g","h"];
+  // detect side to move for check highlight
+  const turnWhite = parts[1] === "w";
+  // find king position if in check
+  let checkSq = -1;
+  // crude: look for 'k' or 'K' — full check detection needs game state; we highlight from fen via simple heuristic
+  // We'll rely on server to send check status via log; skip precise highlight for now.
+
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const sq = document.createElement("div");
+      const rankIdx = 8 - r;
+      const fileIdx = f;
+      const isLight = (r + f) % 2 === 0;
+      sq.className = "sq " + (isLight ? "light" : "dark");
+      // place piece
+      let col = 0;
+      const rowStr = rows[r];
+      let fileCursor = 0;
+      for (const ch of rowStr) {
+        if (/\d/.test(ch)) { fileCursor += parseInt(ch); }
+        else { if (fileCursor === f) { placePiece(sq, ch); break; } fileCursor++; }
+      }
+      // coords
+      if (r === 7) { const c = document.createElement("span"); c.className = "coord file"; c.textContent = files[f]; sq.appendChild(c); }
+      if (f === 0) { const c = document.createElement("span"); c.className = "coord rank"; c.textContent = rankIdx; sq.appendChild(c); }
+      board.appendChild(sq);
+    }
+  }
+}
+
+function placePiece(sq, ch) {
+  const span = document.createElement("span");
+  span.className = "piece " + (ch === ch.toUpperCase() ? "w" : "b");
+  span.textContent = PIECES[ch] || ch;
+  sq.appendChild(span);
+}
+
+function addLog(level, msg) {
+  const logEl = document.getElementById("log");
+  const div = document.createElement("div");
+  div.className = "entry " + (level || "info");
+  const t = new Date().toLocaleTimeString("en-US", {hour12:false});
+  div.innerHTML = `<span class="t">${t}</span>${escapeHtml(msg)}`;
+  logEl.appendChild(div);
+  logEl.scrollTop = logEl.scrollHeight;
+  // keep max 400
+  while (logEl.children.length > 400) logEl.removeChild(logEl.firstChild);
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const PERSONAS = {
+  default: { white: 'You are playing a game of chess as white.\nRespond with JSON: {"move": "<SAN>", "say": "<one short sentence of trash talk or reasoning, max 12 words>"}',
+             black: 'You are playing a game of chess as black.\nRespond with JSON: {"move": "<SAN>", "say": "<one short sentence of trash talk or reasoning, max 12 words>"}' },
+  anand: { white: 'You are Viswanathan Anand playing chess as white — the Indian Tiger, former World Champion, known for your calm composure, deep preparation, intuitive sacrifices, and razor-sharp tactical vision. You play principled, classical chess: fight for the center, develop harmoniously, seize the initiative. You are unfazed by complications — you thrive in them. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Anand\'s calm, wry voice, max 14 words>"}',
+           black: 'You are Viswanathan Anand playing chess as black — the Indian Tiger, former World Champion, known for your calm composure, deep preparation, intuitive sacrifices, and razor-sharp tactical vision. You play principled, classical chess: fight for the center, develop harmoniously, seize the initiative. You are unfazed by complications — you thrive in them. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Anand\'s calm, wry voice, max 14 words>"}' },
+  kasparov: { white: 'You are Garry Kasparov playing chess as white — the Beast from Baku, arguably the greatest ever, known for your ferocious aggression, relentless pressure, openings feared by everyone, and psychological warfare. You probe every weakness, never offer easy draws, attack the king, and grind opponents into the dirt. You play sharp, forcing lines and believe your will to win is itself a weapon. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Kasparov\'s aggressive, intimidating voice, max 14 words>"}',
+              black: 'You are Garry Kasparov playing chess as black — the Beast from Baku, arguably the greatest ever, known for your ferocious aggression, relentless pressure, openings feared by everyone, and psychological warfare. You probe every weakness, never offer easy draws, attack the king, and grind opponents into the dirt. You play sharp, forcing lines and believe your will to win is itself a weapon. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Kasparov\'s aggressive, intimidating voice, max 14 words>"}' },
+  fischer: { white: 'You are Bobby Fischer playing chess as white — cold, precise, ruthless, the most feared player of your era. You play uncompromising chess, seek the truth of every position, despise draws, and crush opponents with flawless technique. You are certain you are the best. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Fischer\'s cold, certain voice, max 14 words>"}',
+             black: 'You are Bobby Fischer playing chess as black — cold, precise, ruthless, the most feared player of your era. You play uncompromising chess, seek the truth of every position, despise draws, and crush opponents with flawless technique. You are certain you are the best. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Fischer\'s cold, certain voice, max 14 words>"}' },
+  carlsen: { white: 'You are Magnus Carlsen playing chess as white — the Mozart of chess, world champion, known for squeezing wins from equal positions, flawless endgame technique, and almost no mistakes. You play simple, precise, universal chess; you don\'t need brilliancies, just the truth. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Carlsen\'s measured, confident voice, max 14 words>"}',
+             black: 'You are Magnus Carlsen playing chess as black — the Mozart of chess, world champion, known for squeezing wins from equal positions, flawless endgame technique, and almost no mistakes. You play simple, precise, universal chess; you don\'t need brilliancies, just the truth. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Carlsen\'s measured, confident voice, max 14 words>"}' },
+  tal: { white: 'You are Mikhail Tal playing chess as white — the Magician from Riga, known for wild, sacrificial, intuitive attacks. You love complications, sacrifice material for the initiative, and trust your calculation in chaos. You play for the crowd. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Tal\'s playful, daring voice, max 14 words>"}',
+         black: 'You are Mikhail Tal playing chess as black — the Magician from Riga, known for wild, sacrificial, intuitive attacks. You love complications, sacrifice material for the initiative, and trust your calculation in chaos. You play for the crowd. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Tal\'s playful, daring voice, max 14 words>"}' },
+  karpov: { white: 'You are Anatoly Karpov playing chess as white — the boa constrictor, positional genius, master of prophylaxis. You prevent every opponent plan before it forms, squeeze them passively, and convert tiny advantages with merciless technique. No fireworks, just suffocation. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Karpov\'s quiet, confident voice, max 14 words>"}',
+            black: 'You are Anatoly Karpov playing chess as black — the boa constrictor, positional genius, master of prophylaxis. You prevent every opponent plan before it forms, squeeze them passively, and convert tiny advantages with merciless technique. No fireworks, just suffocation. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Karpov\'s quiet, confident voice, max 14 words>"}' },
+  morphy: { white: 'You are Paul Morphy playing chess as white — the pride and sorrow of chess, the first unofficial world champion, romantic attacking genius of the 19th century. You develop rapidly, open lines, and sacrifice for the attack. You play with effortless elegance. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Morphy\'s gentlemanly, confident voice, max 14 words>"}',
+            black: 'You are Paul Morphy playing chess as black — the pride and sorrow of chess, the first unofficial world champion, romantic attacking genius of the 19th century. You develop rapidly, open lines, and sacrifice for the attack. You play with effortless elegance. Respond with JSON: {"move": "<SAN>", "say": "<one short sentence in Morphy\'s gentlemanly, confident voice, max 14 words>"}' },
+};
+const ELO_RATINGS = { anand: 2774, kasparov: 2851, fischer: 2785, carlsen: 2882, tal: 2705, karpov: 2780, morphy: 2750 };
+
+// gather all drawer settings into a settings object
+function gatherSettings() {
+  const settings = {
+    players: [
+      {label: document.getElementById("s-p0-label").value,
+       model: document.getElementById("s-p0-model").value,
+       effort: document.getElementById("s-p0-effort").value,
+       temperature: parseFloat(document.getElementById("s-p0-temp").value) || 0.2,
+       base_url: document.getElementById("s-p0-baseurl").value.trim(),
+       api_key: document.getElementById("s-p0-apikey").value},
+      {label: document.getElementById("s-p1-label").value,
+       model: document.getElementById("s-p1-model").value,
+       effort: document.getElementById("s-p1-effort").value,
+       temperature: parseFloat(document.getElementById("s-p1-temp").value) || 0.2,
+       base_url: document.getElementById("s-p1-baseurl").value.trim(),
+       api_key: document.getElementById("s-p1-apikey").value},
+    ],
+    games: parseInt(document.getElementById("s-games").value) || 4,
+    max_plies: parseInt(document.getElementById("s-maxplies").value) || 200,
+    retries: parseInt(document.getElementById("s-retries").value) || 5,
+    max_tokens: parseInt(document.getElementById("s-maxtokens").value) || 16000,
+    commentary: document.getElementById("s-commentary").value === "true",
+    include_previous: document.getElementById("s-inclprev").value === "true",
+  };
+  // Fall back to the live server-side settings when a drawer field is empty,
+  // so clicking Start without re-loading models doesn't send blanks.
+  if (state && state.settings) {
+    for (let i = 0; i < 2; i++) {
+      const sp = state.settings.players[i] || {};
+      const p = settings.players[i];
+      if (!p.label) p.label = sp.label || "";
+      if (!p.model) p.model = sp.model || "";
+      if (!p.base_url) p.base_url = sp.base_url || "";
+      if (!p.api_key) p.api_key = sp.api_key || "";
+      if (!p.effort || p.effort === "default") p.effort = sp.effort || "default";
+      if (p.temperature == null || isNaN(p.temperature)) p.temperature = sp.temperature ?? 0.2;
+    }
+  }
+  // persona → system prompts + rating
+  for (let i = 0; i < 2; i++) {
+    const persona = document.getElementById(`s-p${i}-persona`).value;
+    const sysField = document.getElementById(`s-p${i}-system`);
+    if (persona === "custom") {
+      settings[`system_${i === 0 ? "white" : "black"}`] = sysField.value;
+    } else if (persona !== "default") {
+      const color = i === 0 ? "white" : "black";
+      settings[`system_${color}`] = PERSONAS[persona][color];
+      if (!settings.players[i].label || settings.players[i].label === settings.players[i].model) {
+        const names = {anand:"Anand",kasparov:"Kasparov",fischer:"Fischer",carlsen:"Carlsen",tal:"Tal",karpov:"Karpov",morphy:"Morphy"};
+        settings.players[i].label = (settings.players[i].label || names[persona]);
+      }
+      settings.players[i].rating = ELO_RATINGS[persona] || 0;
+    } else {
+      settings.players[i].rating = 0;
+    }
+  }
+  return settings;
+}
+
+document.getElementById("btn-start").onclick = () => {
+  // Send current drawer settings WITH the start action so they're applied atomically
+  const settings = gatherSettings();
+  send({action: "start", settings});
+};
+document.getElementById("btn-pause").onclick = () => {
+  if (state && state.status === "PAUSED") send({action: "resume"});
+  else send({action: "pause"});
+};
+document.getElementById("btn-reset").onclick = () => { send({action: "reset"}); };
+
+const speedEl = document.getElementById("speed");
+speedEl.oninput = () => { document.getElementById("speed-v").textContent = speedEl.value + "ms"; };
+speedEl.onchange = () => {
+  send({action: "update_settings", settings: {speed_ms: parseInt(speedEl.value)}});
+};
+
+// settings drawer
+const drawer = document.getElementById("drawer");
+const scrim = document.getElementById("scrim");
+function detectProvider(baseUrl) {
+  if (!baseUrl) return "";
+  for (const [k, v] of Object.entries(PROVIDER_PRESETS)) {
+    if (v.base_url === baseUrl) return k;
+  }
+  return "";
+}
+
+function openDrawer() {
+  if (!state) return;
+  const s = state.settings;
+  document.getElementById("s-p0-label").value = s.players[0]?.label || "";
+  document.getElementById("s-p0-label").dataset.previousModel = s.players[0]?.model || "";
+  document.getElementById("s-p0-model").dataset.current = s.players[0]?.model || "";
+  document.getElementById("s-p0-effort").value = s.players[0]?.effort || "default";
+  document.getElementById("s-p0-temp").value = s.players[0]?.temperature ?? 0.2;
+  document.getElementById("s-p0-baseurl").value = s.players[0]?.base_url || "";
+  document.getElementById("s-p0-apikey").value = s.players[0]?.api_key || "";
+  document.getElementById("s-p0-provider").value = detectProvider(s.players[0]?.base_url || "");
+  document.getElementById("s-p1-label").value = s.players[1]?.label || "";
+  document.getElementById("s-p1-label").dataset.previousModel = s.players[1]?.model || "";
+  document.getElementById("s-p1-model").dataset.current = s.players[1]?.model || "";
+  document.getElementById("s-p1-effort").value = s.players[1]?.effort || "default";
+  document.getElementById("s-p1-temp").value = s.players[1]?.temperature ?? 0.2;
+  document.getElementById("s-p1-baseurl").value = s.players[1]?.base_url || "";
+  document.getElementById("s-p1-apikey").value = s.players[1]?.api_key || "";
+  document.getElementById("s-p1-provider").value = detectProvider(s.players[1]?.base_url || "");
+  document.getElementById("s-games").value = s.games;
+  document.getElementById("s-maxplies").value = s.max_plies;
+  document.getElementById("s-retries").value = s.retries;
+  document.getElementById("s-maxtokens").value = s.max_tokens;
+  document.getElementById("s-commentary").value = String(s.commentary);
+  document.getElementById("s-inclprev").value = String(s.include_previous);
+  drawer.classList.add("open"); scrim.classList.add("show");
+  // populate per-player model dropdowns (async, after providers loaded)
+  loadProviders().then(() => {
+    populatePlayerModels(0);
+    populatePlayerModels(1);
+  });
+}
+function closeDrawer() { drawer.classList.remove("open"); scrim.classList.remove("show"); }
+document.getElementById("btn-settings").onclick = openDrawer;
+document.getElementById("drawer-close").onclick = closeDrawer;
+document.getElementById("s-cancel").onclick = closeDrawer;
+scrim.onclick = closeDrawer;
+
+document.getElementById("s-save").onclick = () => {
+  const settings = gatherSettings();
+  send({action: "update_settings", settings});
+  // Visual feedback so the user knows the save landed.
+  const btn = document.getElementById("s-save");
+  const orig = btn.textContent;
+  btn.classList.add("saved");
+  btn.textContent = "Saved";
+  setTimeout(() => {
+    btn.classList.remove("saved");
+    btn.textContent = orig;
+    closeDrawer();
+  }, 450);
+};
+
+// persona dropdown → show/hide custom system textarea
+for (let i = 0; i < 2; i++) {
+  const sel = document.getElementById(`s-p${i}-persona`);
+  const wrap = document.getElementById(`s-p${i}-sys-wrap`);
+  const sysField = document.getElementById(`s-p${i}-system`);
+  sel.onchange = () => {
+    const v = sel.value;
+    if (v === "custom") {
+      wrap.style.display = "";
+      if (!sysField.value) sysField.value = PERSONAS.default[i === 0 ? "white" : "black"];
+    } else {
+      wrap.style.display = "none";
+      if (v !== "default") sysField.value = PERSONAS[v][i === 0 ? "white" : "black"];
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Provider presets + per-player model dropdowns
+// ---------------------------------------------------------------------------
+let PROVIDER_PRESETS = {};
+async function loadProviders() {
+  try {
+    const r = await fetch("/api/providers");
+    PROVIDER_PRESETS = await r.json();
+  } catch (e) { console.warn("providers fetch failed", e); }
+}
+
+// populate a per-player model dropdown. If provider known, use its preset list;
+// otherwise fetch from the endpoint via /api/models_for.
+async function populatePlayerModels(playerIdx) {
+  const sel = document.getElementById(`s-p${playerIdx}-model`);
+  const provider = document.getElementById(`s-p${playerIdx}-provider`).value;
+  const baseUrl = document.getElementById(`s-p${playerIdx}-baseurl`).value.trim();
+  const apiKey = document.getElementById(`s-p${playerIdx}-apikey`).value;
+  const current = sel.value || (document.getElementById(`s-p${playerIdx}-model`).dataset.current || "");
+  sel.innerHTML = "<option value=\"\">loading…</option>";
+  // If provider preset, start with its preset list, then try to fetch live models and merge
+  if (provider && PROVIDER_PRESETS[provider]) {
+    const presetModels = PROVIDER_PRESETS[provider].models || [];
+    let models = [...presetModels];
+    // Try to fetch live models for this provider and merge (preset first, then any extras)
+    if (baseUrl) {
+      try {
+        const url = `/api/models_for?base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}`;
+        const r = await fetch(url);
+        const d = await r.json();
+        if (d.models && d.models.length) {
+          const set = new Set(models);
+          for (const m of d.models) if (!set.has(m)) models.push(m);
+        }
+      } catch (e) {}
+    }
+    sel.innerHTML = "";
+    for (const m of models) {
+      const o = document.createElement("option"); o.value = m; o.textContent = m; sel.appendChild(o);
+    }
+    if (current) sel.value = current;
+    return;
+  }
+  // Otherwise fetch from the endpoint
+  if (!baseUrl) { sel.innerHTML = "<option value=\"\">— type or load —</option>"; return; }
+  try {
+    const url = `/api/models_for?base_url=${encodeURIComponent(baseUrl)}&api_key=${encodeURIComponent(apiKey)}`;
+    const r = await fetch(url);
+    const d = await r.json();
+    if (d.error) { sel.innerHTML = `<option value=\"\">error: ${d.error}</option>`; return; }
+    sel.innerHTML = "";
+    for (const m of d.models) {
+      const o = document.createElement("option"); o.value = m; o.textContent = m; sel.appendChild(o);
+    }
+    if (current) sel.value = current;
+  } catch (e) { sel.innerHTML = `<option value=\"\">fetch failed</option>`; }
+}
+
+// provider dropdown → auto-set base_url + api_key + populate models
+for (let i = 0; i < 2; i++) {
+  const provSel = document.getElementById(`s-p${i}-provider`);
+  provSel.onchange = async () => {
+    const v = provSel.value;
+    const baseUrlEl = document.getElementById(`s-p${i}-baseurl`);
+    const apiKeyEl = document.getElementById(`s-p${i}-apikey`);
+    if (v && PROVIDER_PRESETS[v]) {
+      baseUrlEl.value = PROVIDER_PRESETS[v].base_url;
+      apiKeyEl.placeholder = PROVIDER_PRESETS[v].key_set ? "✓ env key set (loading…)" : "env key missing — paste key";
+      // fetch the actual env key from the server and fill it in
+      if (PROVIDER_PRESETS[v].key_set) {
+        try {
+          const r = await fetch(`/api/provider_key?provider=${encodeURIComponent(v)}`);
+          const d = await r.json();
+          if (d.api_key) {
+            apiKeyEl.value = d.api_key;
+            apiKeyEl.placeholder = "✓ env key set";
+          }
+        } catch (e) {}
+      }
+    }
+    populatePlayerModels(i);
+  };
+  // model dropdown → default display name to the selected model id.
+  // Always overwrite so picking a model keeps name & model in sync out of the box;
+  // the user can still type a custom name afterwards if they want.
+  const modelSel = document.getElementById(`s-p${i}-model`);
+  modelSel.addEventListener("change", () => {
+    const labelEl = document.getElementById(`s-p${i}-label`);
+    const m = modelSel.value;
+    if (!m) return;
+    labelEl.value = m;
+    labelEl.dataset.previousModel = m;
+  });
+  // populate models when base_url or api_key changes
+  document.getElementById(`s-p${i}-baseurl`).addEventListener("change", () => populatePlayerModels(i));
+  document.getElementById(`s-p${i}-apikey`).addEventListener("change", () => populatePlayerModels(i));
+}
+
+// load provider presets on startup, then populate
+loadProviders().then(() => {
+  populatePlayerModels(0);
+  populatePlayerModels(1);
+});
+
+connect();
+</script>
+</body>
+</html>
