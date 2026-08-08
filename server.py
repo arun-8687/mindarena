@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 import chess
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from games import create_engine, GAMES, GameEngine
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
@@ -76,13 +77,34 @@ PROVIDERS: dict[str, dict] = {
             "glm-5.2", "glm-5.1", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
             "minimax-m3", "minimax-m2.7", "qwen3.5:397b", "gpt-oss:120b", "gpt-oss:20b",
             "gemma4:31b", "mistral-large-3:675b", "nemotron-3-ultra", "nemotron-3-super",
+            "nemotron-3-nano:30b",
         ],
     },
     "opencode_go": {
         "base_url": "https://opencode.ai/zen/go/v1",
         "key_env": "OPENCODE_GO_API_KEY",
         "label": "OpenCode Zen GO",
-        "models": ["gpt-5.6-luna"],
+        "models": [
+            "gpt-5.6-luna", "grok-4.5", "deepseek-v4-pro", "deepseek-v4-flash",
+            "glm-5", "glm-5.1", "glm-5.2", "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
+            "kimi-k2.5", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
+            "qwen3.8-max", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+            "mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni",
+            "hy3", "hy3-preview",
+        ],
+    },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_env": "OPENROUTER_API_KEY",
+        "label": "OpenRouter (free models)",
+        "models": [],  # populated at startup by _refresh_provider_models()
+    },
+    "opencode_zen": {
+        "base_url": "https://opencode.ai/zen/v1",
+        "key_env": "OPENCODE_GO_API_KEY",  # same key works for Go and Zen
+        "label": "OpenCode Zen (free models)",
+        "models": [],
+        "free_filter": lambda m: m.endswith("-free") or "free" in m,
     },
 }
 
@@ -120,6 +142,7 @@ class Settings:
     commentary: bool = True    # ask for (and show) the per-move one-liner
     include_previous: bool = True
     speed_ms: int = 0          # delay between moves
+    game_type: str = "chess"   # chess | othello
     prompt_template: str = (
         "You are {player}, playing a game of chess as {color} against {opponent}.\n"
         "This is game {gameNumber} of {totalGames}.\n"
@@ -168,6 +191,7 @@ class GameState:
     total_games: int = 4
     series_score: str = "0–0"
     board_fen: str = chess.STARTING_FEN
+    othello_grid: str = ""
     last_move: str = ""
     last_from: str = ""
     last_to: str = ""
@@ -254,6 +278,7 @@ class MindArenaEngine:
             "total_games": st.total_games,
             "series_score": st.series_score,
             "fen": st.board_fen,
+            "othello_grid": st.othello_grid,
             "last_move": st.last_move,
             "last_from": st.last_from,
             "last_to": st.last_to,
@@ -267,6 +292,7 @@ class MindArenaEngine:
             "game_results": st.game_results,
             "total_cost": st.total_cost,
             "error": st.error,
+            "game_type": self.settings.game_type,
             "settings": _settings_dict(self.settings),
         }
 
@@ -382,6 +408,9 @@ class MindArenaEngine:
             s.commentary = bool(d["commentary"])
         if "include_previous" in d:
             s.include_previous = bool(d["include_previous"])
+        s.game_type = d.get("game_type", s.game_type)
+        if s.game_type not in GAMES:
+            s.game_type = "chess"
         if d.get("prompt_template"):
             s.prompt_template = d["prompt_template"]
 
@@ -428,30 +457,19 @@ class MindArenaEngine:
                 return key
         return self.settings.api_key
 
-    async def _llm_move(self, player_idx: int, color: str, board: chess.Board,
+    async def _llm_move(self, player_idx: int, color: str, engine: GameEngine,
                         game_no: int, move_no: int, prev_games: str,
                         feedback: str = "") -> tuple[str, str, dict]:
-        """Return (raw_move_text, say, usage). Raises Transient/FatalLLMError."""
+        """Return (parsed_move_str, say, usage). Raises Transient/FatalLLMError."""
         s = self.settings
         p = s.players[player_idx]
-        legal = [board.san(m) for m in board.legal_moves]
-        prompt = _render(s.prompt_template, {
-            "player": p.label,
-            "color": color,
-            "opponent": s.players[1 - player_idx].label,
-            "gameNumber": game_no,
-            "totalGames": s.games,
-            "fen": board.fen(),
-            "board": _board_ascii(board, color == "white"),
-            "moveNumber": move_no,
-            "lastMove": self.state.last_move or "—",
-            "inCheck": "yes" if board.is_check() else "no",
-            "moves": " ".join(self.state.move_list) or "—",
-            "previousGames": prev_games or "—",
-            "legalMoveCount": len(legal),
-            "legalMoves": " ".join(legal),
-        })
-        base_system = p.system or (DEFAULT_SYSTEM if s.commentary else DEFAULT_SYSTEM_NO_SAY)
+        template = engine.prompt_template()
+        vals = engine.prompt_values(
+            p.label, s.players[1 - player_idx].label, color,
+            game_no, s.games, move_no, self.state.last_move,
+            self.state.move_list, prev_games)
+        prompt = _render(template, vals)
+        base_system = p.system or engine.system_prompt(s.commentary, color)
         system = _render(base_system, {"color": color})
 
         messages = [{"role": "system", "content": system},
@@ -495,7 +513,13 @@ class MindArenaEngine:
 
         content = msg.get("content") or ""
         usage = data.get("usage") or {}
-        move, say = _parse_move(content, board)
+        move = engine.parse_move(content)
+        # Extract "say" from the content for commentary
+        say = ""
+        if s.commentary:
+            m2 = SAY_RE.search(content)
+            if m2:
+                say = m2.group(1)
         usage["_ms"] = dt
         usage["_reasoning_tokens"] = (
             (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
@@ -537,7 +561,7 @@ class MindArenaEngine:
 
     async def _play_game(self, game_no: int, white_idx: int):
         s = self.settings
-        board = chess.Board()
+        engine = create_engine(s.game_type)
         self.state.move_list = []
         self.state.last_move = ""
         self.state.last_from = ""
@@ -546,7 +570,8 @@ class MindArenaEngine:
         self.state.last_say = ""
         self.state.last_player_idx = -1
         self.state.plies = 0
-        self.state.board_fen = board.fen()
+        self.state.board_fen = engine.board_state().get("fen", "")
+        self.state.othello_grid = engine.board_state().get("othello_grid", "")
         await self._broadcast_state()
 
         prev_games = ""
@@ -557,29 +582,29 @@ class MindArenaEngine:
             )
 
         move_no = 0
-        while not board.is_game_over(claim_draw=True) and self.state.plies < s.max_plies:
+        while not engine.is_game_over() and self.state.plies < s.max_plies:
             if self._stop.is_set():
                 return
             await self._pause.wait()
             if self._stop.is_set():
                 return
 
-            player_idx = white_idx if board.turn == chess.WHITE else (1 - white_idx)
-            color = "white" if board.turn == chess.WHITE else "black"
+            player_idx = white_idx if engine.current_player() == 0 else (1 - white_idx)
+            color = engine.first_color if engine.current_player() == 0 else engine.second_color
             move_no += 1
-            move = await self._request_move(player_idx, color, board, game_no, move_no, prev_games)
+            move = await self._request_move(player_idx, color, engine, game_no, move_no, prev_games)
             if move is None:
                 if self._stop.is_set():
                     return
                 await self._forfeit(game_no, white_idx, player_idx)
                 return
-            await self._apply_move(board, move, player_idx, move_no)
+            await self._apply_move(engine, move, player_idx, move_no)
             await self._sleep(s.speed_ms / 1000.0)
 
-        await self._adjudicate(board, game_no, white_idx)
+        await self._adjudicate(engine, game_no, white_idx)
 
-    async def _request_move(self, player_idx: int, color: str, board: chess.Board,
-                            game_no: int, move_no: int, prev_games: str) -> Optional[chess.Move]:
+    async def _request_move(self, player_idx: int, color: str, engine: GameEngine,
+                            game_no: int, move_no: int, prev_games: str) -> Optional[str]:
         """Ask the model until it produces a legal move, or the budget runs out.
 
         Bad answers and network failures have separate budgets: a flaky endpoint
@@ -600,7 +625,7 @@ class MindArenaEngine:
             await self._log("thinking", f"{label}: thinking… (move {move_no}, attempt {attempt})")
             try:
                 raw, say, usage = await self._llm_move(
-                    player_idx, color, board, game_no, move_no, prev_games, feedback)
+                    player_idx, color, engine, game_no, move_no, prev_games, feedback)
             except TransientLLMError as e:
                 net_failures += 1
                 await self._log("warn", f"{label}: {str(e)[:160]} (network attempt {net_failures})")
@@ -617,16 +642,19 @@ class MindArenaEngine:
                 await self._sleep(min(2 ** bad_answers, 30))
                 continue
 
-            move = _resolve_move(board, raw)
-            if move is None:
+            # Check if the move is legal without applying it.
+            # engine.apply() both validates and pushes, so we test by checking
+            # against the legal move list (case-insensitive for robustness).
+            legal = engine.legal_moves()
+            legal_lower = {m.lower(): m for m in legal}
+            matched = legal_lower.get(raw.strip().lower())
+            if matched is None:
                 bad_answers += 1
                 self.state.players[player_idx].illegal += 1
-                legal = [board.san(m) for m in board.legal_moves]
+                raw_short = raw[:80].replace("\n", " ") if raw else "(empty)"
                 await self._log("warn",
-                    f"{label}: illegal/unparseable move {raw!r} "
+                    f"{label}: illegal/unparseable move '{raw_short}' "
                     f"(attempt {bad_answers}). Legal: {', '.join(legal[:8])}…")
-                # Tell the model what went wrong — resending the identical prompt
-                # mostly just reproduces the identical bad answer.
                 feedback = (
                     f'Your previous answer "{raw}" is not a legal move in this position. '
                     f"Reply with exactly one move from this list: {', '.join(legal)}"
@@ -638,7 +666,7 @@ class MindArenaEngine:
 
             self._record_usage(player_idx, usage)
             self.state.last_say = say
-            return move
+            return matched
         return None
 
     def _record_usage(self, player_idx: int, usage: dict):
@@ -652,27 +680,34 @@ class MindArenaEngine:
         ps.avg_ms = int(sum(ps._move_times) / len(ps._move_times))
         self.state.total_cost += cost
 
-    async def _apply_move(self, board: chess.Board, move: chess.Move,
+    async def _apply_move(self, engine: GameEngine, move_str: str,
                           player_idx: int, move_no: int):
-        san = board.san(move)
-        board.push(move)
+        engine.apply(move_str)
+        san = engine.last_move_display()
         st = self.state
         ps = st.players[player_idx]
         ps.moves += 1
         st.last_move = san
-        st.last_from = chess.square_name(move.from_square)
-        st.last_to = chess.square_name(move.to_square)
-        st.check_square = (
-            chess.square_name(board.king(board.turn)) if board.is_check() else ""
-        )
+        # Get from/to squares for UI highlighting (chess-specific; othello returns "")
+        try:
+            from_sq, to_sq = engine.last_move_squares()
+        except (AttributeError, TypeError):
+            from_sq, to_sq = "", ""
+        st.last_from = from_sq
+        st.last_to = to_sq
+        # Check square (chess-specific; othello has no check)
+        bstate = engine.board_state()
+        st.check_square = bstate.get("check_square", "")
         st.last_player_idx = player_idx
         st.move_list.append(san)
         st.plies = len(st.move_list)
-        st.board_fen = board.fen()
+        st.board_fen = bstate.get("fen", "")
+        st.othello_grid = bstate.get("othello_grid", "")
         await self._broadcast({
             "type": "move", "ply": st.plies, "san": san, "say": st.last_say,
             "player_idx": player_idx, "fen": st.board_fen, "move_no": move_no,
             "from": st.last_from, "to": st.last_to, "check_square": st.check_square,
+            "game_type": engine.game_type, "board_state": bstate,
         })
         await self._log("move",
             f"{self.settings.players[player_idx].label}: {san}"
@@ -695,17 +730,13 @@ class MindArenaEngine:
             f"{s.players[loser_idx].label} forfeits game {game_no} — no legal move produced.")
         await self._update_score()
 
-    async def _adjudicate(self, board: chess.Board, game_no: int, white_idx: int):
+    async def _adjudicate(self, engine: GameEngine, game_no: int, white_idx: int):
         s = self.settings
-        outcome = board.outcome(claim_draw=True)
-        if outcome is None:
-            # Hit the ply limit — adjudicate on material.
-            margin = _material(board, chess.WHITE) - _material(board, chess.BLACK)
-            result = "1-0" if margin >= 5 else "0-1" if margin <= -5 else "1/2-1/2"
-            reason = "adjudicated"
+        if engine.is_game_over():
+            result, reason = engine.adjudicate()
         else:
-            result = outcome.result()
-            reason = outcome.termination.name
+            # Hit the ply limit
+            result, reason = engine.adjudicate_ply_limit()
 
         if result == "1-0":
             self.state.players[white_idx].wins += 1
@@ -793,6 +824,7 @@ def _settings_dict(s: Settings) -> dict:
         "retries": s.retries, "network_retries": s.network_retries,
         "max_tokens": s.max_tokens, "commentary": s.commentary,
         "include_previous": s.include_previous, "speed_ms": s.speed_ms,
+        "game_type": s.game_type,
         "prompt_template": s.prompt_template,
     }
 
@@ -955,6 +987,45 @@ async def _fetch_models(base_url: str, api_key: str) -> dict:
     return {"models": sorted(ids)}
 
 
+async def _refresh_provider_models():
+    """Fetch live model lists for all providers at startup.
+    Merges the live list with the hardcoded presets so the dropdown never
+    loses a model even if the endpoint is temporarily unreachable."""
+    async with httpx.AsyncClient(timeout=20.0) as c:
+        for key, preset in PROVIDERS.items():
+            base_url = preset["base_url"]
+            key_env = preset["key_env"]
+            api_key = os.environ.get(key_env, "")
+            # OpenRouter's /models works without a key; others need one.
+            if not api_key and key != "openrouter":
+                print(f"[{key}] skipped (no api key in {key_env})", flush=True)
+                continue
+            try:
+                headers = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                r = await c.get(f"{base_url.rstrip('/')}/models", headers=headers)
+                if r.status_code != 200:
+                    print(f"[{key}] refresh failed: HTTP {r.status_code}", flush=True)
+                    continue
+                data = r.json()
+                ids = [m.get("id", "") for m in (data.get("data") or []) if m.get("id")]
+                # Filter to free models for providers that have a free_filter
+                ff = preset.get("free_filter")
+                if key == "openrouter":
+                    ids = sorted(m for m in ids if ":free" in m)
+                elif ff:
+                    ids = sorted(m for m in ids if ff(m))
+                else:
+                    ids = sorted(ids)
+                # Merge with preset list so hardcoded models aren't lost
+                merged = list(dict.fromkeys(ids + preset["models"]))
+                preset["models"] = merged
+                print(f"[{key}] loaded {len(merged)} models ({len(ids)} from API)", flush=True)
+            except Exception as e:
+                print(f"[{key}] refresh error: {e}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI
 # ---------------------------------------------------------------------------
@@ -962,6 +1033,7 @@ engine = MindArenaEngine()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await _refresh_provider_models()
     yield
     await engine.reset()
     await engine._http.aclose()
@@ -1015,6 +1087,11 @@ async def models_for(req: dict):
             return JSONResponse({"error": "unknown provider"}, 400)
         base_url = base_url or preset["base_url"]
         api_key = api_key or os.environ.get(preset["key_env"], "")
+        # Providers with a free_filter or openrouter return only free models
+        # from the preset list (already filtered at startup).
+        ff = preset.get("free_filter")
+        if (provider == "openrouter" or ff) and preset["models"]:
+            return {"models": preset["models"]}
     elif not base_url:
         return JSONResponse({"error": "provider or base_url required"}, 400)
     # A missing key or an unreachable endpoint is reported in the body, not as
