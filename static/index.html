@@ -72,10 +72,13 @@
   .disc.w { background: radial-gradient(circle at 35% 30%, #fff, #ccc); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
   .cb-title { font-size: 1.2rem; font-weight: 700; color: var(--accent2); margin-bottom: 6px; text-align: center; }
   .cb-verdict { font-size: 1rem; color: #fff; margin-bottom: 12px; text-align: center; }
-  .cb-card { background: #11131f; border: 1px solid #2a2d42; border-radius: 8px; padding: 10px; margin-bottom: 10px; overflow: auto; max-height: 40vh; }
-  .cb-card-head { font-weight: 600; color: var(--accent2); margin-bottom: 6px; font-size: 0.85rem; }
-  .cb-err { color: #ff6b6b; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 6px; }
-  .cb-code { font-family: ui-monospace, monospace; font-size: 0.72rem; color: #d4d4f0; white-space: pre-wrap; word-break: break-word; }
+  .cb-head { text-align: center; margin-bottom: 12px; }
+  .cb-placeholder { color: #8a8fa8; font-size: 0.95rem; text-align: center; line-height: 1.5; padding: 40px 12px; white-space: pre-line; }
+  .cb-round { background: #11131f; border: 1px solid #2a2d42; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .cb-round-head { font-weight: 600; color: var(--accent2); margin-bottom: 6px; font-size: 0.8rem; line-height: 1.4; }
+  .cb-sol summary { cursor: pointer; color: #d4d4f0; font-size: 0.8rem; padding: 3px 0; }
+  .cb-err { color: #ff6b6b; font-size: 0.75rem; white-space: pre-wrap; margin: 4px 0; }
+  .cb-code { font-family: ui-monospace, monospace; font-size: 0.72rem; color: #d4d4f0; white-space: pre-wrap; word-break: break-word; margin-top: 4px; max-height: 40vh; overflow: auto; }
   .coord { position: absolute; font-size: 9px; color: rgba(0,0,0,0.45); }
   .coord.file { bottom: 1px; right: 3px; }
   .coord.rank { top: 1px; left: 3px; }
@@ -361,8 +364,8 @@
       <select id="s-mode"><option value="game">Board Game</option><option value="code">Code Battle</option></select></div>
     <div class="field" id="s-game-field"><label for="s-game">Game</label>
       <select id="s-game"><option value="chess">Chess</option><option value="othello">Othello</option></select></div>
-    <div class="field" id="s-problem-field" style="display:none"><label for="s-problem">Problem</label>
-      <select id="s-problem"><option value="">loading…</option></select></div>
+    <div class="field" id="s-problem-field" style="display:none"><label for="s-problem">Problems (random, mixed difficulty)</label>
+      <input id="s-problem" type="number" min="1" max="20" value="3"></div>
     <div class="two">
       <div class="field"><label for="s-games">Games in series</label><input id="s-games" type="number" min="1" max="100"></div>
       <div class="field"><label for="s-maxplies">Ply limit</label><input id="s-maxplies" type="number" min="20" max="1000"></div>
@@ -612,44 +615,76 @@ function renderBoard() {
 function renderCodeBattle() {
   const boardEl = $("board");
   const cb = state.code_battle;
-  if (!cb) {
-    boardEl.replaceChildren();
-    boardEl.setAttribute("aria-label", "Code battle");
+  const frag = document.createDocumentFragment();
+
+  if (!cb || !cb.rounds) {
+    // Placeholder before a battle runs.
+    const ph = document.createElement("div");
+    ph.className = "cb-placeholder";
+    ph.textContent = "Pick a problem count and press Start series.\nRandom problems of mixed difficulty will be drawn.";
+    frag.appendChild(ph);
+    boardEl.replaceChildren(frag);
+    boardEl.setAttribute("aria-label", "Code battle placeholder");
     return;
   }
+
+  const rounds = cb.rounds || [];
   const p0 = cb.player0, p1 = cb.player1;
-  const winner = cb.winner; // 0, 1, or -1 (draw)
-  const winLabel = winner === 0 ? p0.label : winner === 1 ? p1.label : "Draw";
-  const frag = document.createDocumentFragment();
+  const winner = cb.winner;
+  const winLabel = winner === 0 ? (p0 && p0.label) : winner === 1 ? (p1 && p1.label) : "Draw";
+
+  // Header: overall progress + winner.
+  const head = document.createElement("div");
+  head.className = "cb-head";
   const title = document.createElement("div");
   title.className = "cb-title";
-  title.textContent = `${cb.title} — ${cb.difficulty}`;
-  frag.appendChild(title);
+  title.textContent = `CODE BATTLE — ${cb.current}/${cb.total} rounds`;
+  head.appendChild(title);
   const verdict = document.createElement("div");
   verdict.className = "cb-verdict";
-  verdict.textContent = `Winner: ${winLabel}`;
-  frag.appendChild(verdict);
-  for (const [i, p] of [[0, p0], [1, p1]]) {
+  const score = p0 && p1 ? `${p0.label} ${p0.score}–${p1.score} ${p1.label}` : "";
+  verdict.textContent = winLabel === "Draw" ? `Draw — ${score}` : `Winner: ${winLabel} — ${score}`;
+  head.appendChild(verdict);
+  frag.appendChild(head);
+
+  // Per-round cards.
+  for (const r of rounds) {
+    const rp0 = r.player0, rp1 = r.player1;
+    const rwin = r.winner;
     const card = document.createElement("div");
-    card.className = "cb-card";
-    const head = document.createElement("div");
-    head.className = "cb-card-head";
-    head.textContent = `${p.label} — ${p.passed}/${p.total} tests${p.compile_error ? " · error" : ""} · ${p.runtime_ms}ms`;
-    card.appendChild(head);
-    if (p.compile_error) {
-      const err = document.createElement("pre");
-      err.className = "cb-err";
-      err.textContent = p.compile_error.slice(0, 300);
-      card.appendChild(err);
+    card.className = "cb-round";
+    const rhead = document.createElement("div");
+    rhead.className = "cb-round-head";
+    const w0 = rwin === 0, w1 = rwin === 1;
+    rhead.textContent =
+      `R${r.round || rounds.indexOf(r) + 1} ${r.title} (${r.difficulty}) — ` +
+      `${w0 ? "✓ " : ""}${rp0.label} ${rp0.passed}/${rp0.total} · ${rp0.runtime_ms}ms` +
+      ` | ${w1 ? "✓ " : ""}${rp1.label} ${rp1.passed}/${rp1.total} · ${rp1.runtime_ms}ms`;
+    card.appendChild(rhead);
+    // Show both solutions.
+    for (const [i, rp] of [[0, rp0], [1, rp1]]) {
+      const code = document.createElement("details");
+      code.className = "cb-sol";
+      const sum = document.createElement("summary");
+      sum.textContent = `${rp.label} ${rwin === i ? "(winner)" : ""}`;
+      code.appendChild(sum);
+      if (rp.compile_error) {
+        const err = document.createElement("pre");
+        err.className = "cb-err";
+        err.textContent = rp.compile_error.slice(0, 300);
+        code.appendChild(err);
+      }
+      const pre = document.createElement("pre");
+      pre.className = "cb-code";
+      pre.textContent = rp.solution || "(no solution)";
+      code.appendChild(pre);
+      card.appendChild(code);
     }
-    const pre = document.createElement("pre");
-    pre.className = "cb-code";
-    pre.textContent = p.solution || "(no solution)";
-    card.appendChild(pre);
     frag.appendChild(card);
   }
+
   boardEl.replaceChildren(frag);
-  boardEl.setAttribute("aria-label", `Code battle: ${cb.title}`);
+  boardEl.setAttribute("aria-label", `Code battle: ${cb.total} rounds`);
 }
 
 function renderChessBoard() {
@@ -787,7 +822,8 @@ function gatherSettings() {
   return {
     mode: $("s-mode").value || "game",
     game_type: $("s-game").value || "chess",
-    code_problem: $("s-problem").value || "two-sum",
+    code_problem: "two-sum",
+    code_count: numOr($("s-problem"), live.code_count ?? 3),
     players,
     games: numOr($("s-games"), live.games ?? 4),
     max_plies: numOr($("s-maxplies"), live.max_plies ?? 200),
@@ -812,21 +848,6 @@ function toggleModeFields(mode) {
   $("s-problem-field").style.display = mode === "code" ? "" : "none";
 }
 
-async function loadProblems() {
-  try {
-    const r = await fetch("/api/problems");
-    const d = await r.json();
-    const sel = $("s-problem");
-    const opts = (d.problems || []).map(p =>
-      `<option value="${p.slug}">${esc(p.title)} (${p.difficulty})</option>`).join("");
-    sel.innerHTML = opts;
-    const cur = (state && state.settings && state.settings.code_problem) || "two-sum";
-    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
-  } catch (e) {
-    $("s-problem").innerHTML = "<option value='two-sum'>Two Sum</option>";
-  }
-}
-
 function openDrawer() {
   if (!state) return;
   const s = state.settings;
@@ -848,7 +869,7 @@ function openDrawer() {
   $("s-mode").value = s.mode || "game";
   toggleModeFields($("s-mode").value);
   $("s-game").value = s.game_type || "chess";
-  $("s-problem").value = s.code_problem || "two-sum";
+  $("s-problem").value = s.code_count || 3;
   $("s-games").value = s.games;
   $("s-maxplies").value = s.max_plies;
   $("s-retries").value = s.retries;
@@ -859,7 +880,6 @@ function openDrawer() {
   $("drawer").classList.add("open");
   $("scrim").classList.add("show");
   loadProviders().then(() => { populateModels(0); populateModels(1); });
-  loadProblems();
   $("s-mode").onchange = () => toggleModeFields($("s-mode").value);
 }
 

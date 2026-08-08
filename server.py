@@ -144,7 +144,8 @@ class Settings:
     include_previous: bool = True
     speed_ms: int = 0          # delay between moves
     game_type: str = "chess"   # chess | othello
-    code_problem: str = "two-sum"  # slug of the code-battle problem
+    code_problem: str = "two-sum"  # (unused now; kept for compat)
+    code_count: int = 3        # number of random problems per code battle
     mode: str = "game"         # game | code
     prompt_template: str = (
         "You are {player}, playing a game of chess as {color} against {opponent}.\n"
@@ -422,6 +423,7 @@ class MindArenaEngine:
         s.code_problem = d.get("code_problem", s.code_problem)
         if not get_problem(s.code_problem):
             s.code_problem = "two-sum"
+        s.code_count = _clamp_int(d.get("code_count"), s.code_count, 1, 20)
         if d.get("prompt_template"):
             s.prompt_template = d["prompt_template"]
 
@@ -539,75 +541,100 @@ class MindArenaEngine:
 
     # -- code battle --------------------------------------------------------
     async def _run_code_battle(self):
-        """Both players solve the same coding problem; the judge decides."""
+        """Run `code_count` random problems (mixed difficulty). Winner of each
+        round scores a point; the series is best of N."""
         s = self.settings
-        problem = get_problem(s.code_problem) or get_problem("two-sum")
+        import random
+        # Pick N distinct random problems, shuffling difficulty mix.
+        problems = random.sample(CODE_PROBLEMS, min(s.code_count, len(CODE_PROBLEMS)))
         self.state.game_no = 1
         self.state.move_list = []
         self.state.last_move = ""
         self.state.last_say = ""
         self.state.plies = 0
         self.state.code_battle = None
-        await self._log("info", f"CODE BATTLE: {problem.title} ({problem.difficulty})")
-        await self._log("info", f"{s.players[0].label} vs {s.players[1].label}")
+        self.state.game_results = []
+        await self._log("info",
+            f"CODE BATTLE — {len(problems)} problems ({s.players[0].label} vs {s.players[1].label})")
 
-        # Ask both players in parallel for their solutions.
-        results = await asyncio.gather(
-            self._request_code_solution(0, problem),
-            self._request_code_solution(1, problem),
-        )
-        sol0, sol1 = results
+        rounds = []
+        for i, problem in enumerate(problems, start=1):
+            if self._stop.is_set():
+                break
+            await self._pause.wait()
+            if self._stop.is_set():
+                break
+            self.state.game_no = i
+            await self._log("info", f"Round {i}/{len(problems)}: {problem.title} ({problem.difficulty})")
 
-        # Judge each.
-        r0 = judge_code(problem, sol0) if sol0 else None
-        r1 = judge_code(problem, sol1) if sol1 else None
+            # Ask both players in parallel for their solutions.
+            results = await asyncio.gather(
+                self._request_code_solution(0, problem),
+                self._request_code_solution(1, problem),
+            )
+            sol0, sol1 = results
 
-        if r0 is None or r1 is None:
-            # A player didn't produce code — the other wins by default.
-            winner = -1
-            if r0 is not None and r1 is None:
-                winner = 0
-            elif r1 is not None and r0 is None:
-                winner = 1
-            elif r0 is None and r1 is None:
+            # Judge each.
+            r0 = judge_code(problem, sol0) if sol0 else None
+            r1 = judge_code(problem, sol1) if sol1 else None
+
+            if r0 is None or r1 is None:
                 winner = -1
-        else:
-            winner = decide_winner(r0, r1)
+                if r0 is not None and r1 is None:
+                    winner = 0
+                elif r1 is not None and r0 is None:
+                    winner = 1
+            else:
+                winner = decide_winner(r0, r1)
 
-        # Update stats.
+            # Update round-level stats.
+            p0, p1 = self.state.players[0], self.state.players[1]
+            if winner == 0:
+                p0.wins += 1; p1.losses += 1
+            elif winner == 1:
+                p1.wins += 1; p0.losses += 1
+            else:
+                p0.draws += 1; p1.draws += 1
+
+            rounds.append({
+                "round": i, "problem": problem.slug, "title": problem.title,
+                "difficulty": problem.difficulty, "winner": winner,
+                "player0": {
+                    "label": s.players[0].label,
+                    "solution": sol0,
+                    "passed": r0.passed if r0 else 0,
+                    "total": len(problem.tests),
+                    "runtime_ms": round(r0.runtime_ms, 2) if r0 else 0,
+                    "compile_error": (r0.compile_error if r0 else ("no solution" if not sol0 else "")),
+                },
+                "player1": {
+                    "label": s.players[1].label,
+                    "solution": sol1,
+                    "passed": r1.passed if r1 else 0,
+                    "total": len(problem.tests),
+                    "runtime_ms": round(r1.runtime_ms, 2) if r1 else 0,
+                    "compile_error": (r1.compile_error if r1 else ("no solution" if not sol1 else "")),
+                },
+            })
+            await self._log("info",
+                f"Round {i} result: {s.players[0].label} {p0.wins}-{p1.wins} {s.players[1].label} "
+                f"({['P0','P1','draw'][winner]})")
+            # Emit partial state after each round so the UI updates live.
+            self.state.code_battle = {"rounds": rounds, "current": i, "total": len(problems)}
+            await self._broadcast_state()
+
         p0, p1 = self.state.players[0], self.state.players[1]
-        if winner == 0:
-            p0.wins += 1; p1.losses += 1
-        elif winner == 1:
-            p1.wins += 1; p0.losses += 1
-        else:
-            p0.draws += 1; p1.draws += 1
         self.state.series_score = f"{_points(p0)}–{_points(p1)}"
-
+        # Final result carries the per-round details + overall winner.
+        final_winner = 0 if p0.wins > p1.wins else 1 if p1.wins > p0.wins else -1
         self.state.code_battle = {
-            "problem": problem.slug,
-            "title": problem.title,
-            "difficulty": problem.difficulty,
-            "player0": {
-                "label": s.players[0].label,
-                "solution": sol0,
-                "passed": r0.passed if r0 else 0,
-                "total": len(problem.tests),
-                "runtime_ms": round(r0.runtime_ms, 2) if r0 else 0,
-                "compile_error": (r0.compile_error if r0 else "no solution produced"),
-            },
-            "player1": {
-                "label": s.players[1].label,
-                "solution": sol1,
-                "passed": r1.passed if r1 else 0,
-                "total": len(problem.tests),
-                "runtime_ms": round(r1.runtime_ms, 2) if r1 else 0,
-                "compile_error": (r1.compile_error if r1 else "no solution produced"),
-            },
-            "winner": winner,
+            "rounds": rounds, "current": len(rounds), "total": len(problems),
+            "winner": final_winner,
+            "player0": {"label": s.players[0].label, "score": p0.wins},
+            "player1": {"label": s.players[1].label, "score": p1.wins},
         }
         await self._log("info",
-            f"Code battle result: winner = {['P0','P1','draw'][winner]} "
+            f"Code battle result: winner = {['P0','P1','draw'][final_winner]} "
             f"({p0.wins}-{p1.wins})")
         await self._broadcast_state()
 
@@ -968,6 +995,7 @@ def _settings_dict(s: Settings) -> dict:
         "max_tokens": s.max_tokens, "commentary": s.commentary,
         "include_previous": s.include_previous, "speed_ms": s.speed_ms,
         "game_type": s.game_type, "mode": s.mode, "code_problem": s.code_problem,
+        "code_count": s.code_count,
         "prompt_template": s.prompt_template,
     }
 
