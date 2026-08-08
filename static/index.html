@@ -70,15 +70,89 @@
   .disc { width: 72%; height: 72%; border-radius: 50%; display: block; }
   .disc.b { background: radial-gradient(circle at 35% 30%, #444, #111); box-shadow: 0 1px 3px rgba(0,0,0,0.5); }
   .disc.w { background: radial-gradient(circle at 35% 30%, #fff, #ccc); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
-  .cb-title { font-size: 1.2rem; font-weight: 700; color: var(--accent2); margin-bottom: 6px; text-align: center; }
-  .cb-verdict { font-size: 1rem; color: #fff; margin-bottom: 12px; text-align: center; }
-  .cb-head { text-align: center; margin-bottom: 12px; }
-  .cb-placeholder { color: #8a8fa8; font-size: 0.95rem; text-align: center; line-height: 1.5; padding: 40px 12px; white-space: pre-line; }
-  .cb-round { background: #11131f; border: 1px solid #2a2d42; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
-  .cb-round-head { font-weight: 600; color: var(--accent2); margin-bottom: 6px; font-size: 0.8rem; line-height: 1.4; }
-  .cb-sol summary { cursor: pointer; color: #d4d4f0; font-size: 0.8rem; padding: 3px 0; }
-  .cb-err { color: #ff6b6b; font-size: 0.75rem; white-space: pre-wrap; margin: 4px 0; }
-  .cb-code { font-family: ui-monospace, monospace; font-size: 0.72rem; color: #d4d4f0; white-space: pre-wrap; word-break: break-word; margin-top: 4px; max-height: 40vh; overflow: auto; }
+  /* ---- code battle ---- */
+  body.mode-code .board-wrap, body.mode-code .say { display: none; }
+  body.mode-code .stage { justify-content: flex-start; align-items: stretch;
+    overflow-y: auto; padding: 12px 16px; }
+  .codearena { width: 100%; max-width: 1100px; margin: 0 auto; }
+  .cb-empty { color: var(--dim); text-align: center; padding: 48px 16px; line-height: 1.7; }
+  .cb-empty strong { color: var(--text); display: block; margin-bottom: 6px; font-size: 15px; }
+
+  .cb-problem { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px; margin-bottom: 12px; }
+  .cb-round-no { font-size: 10px; letter-spacing: 2px; color: var(--dim); }
+  .cb-name { font-size: 17px; font-weight: 700; margin: 2px 0 8px; }
+  .cb-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .badge { font-size: 10px; letter-spacing: 0.5px; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim); background: #0e0e16; white-space: nowrap; }
+  .badge.Easy { color: var(--good); border-color: rgba(0,229,160,0.35); }
+  .badge.Medium { color: var(--warn); border-color: rgba(255,184,77,0.35); }
+  .badge.Hard { color: #ff8a5c; border-color: rgba(255,138,92,0.35); }
+  .badge.Expert { color: var(--bad); border-color: rgba(255,77,109,0.4); }
+  .badge.src { color: var(--accent); border-color: rgba(124,92,255,0.4); }
+  .cb-statement { font-size: 12.5px; line-height: 1.65; color: #c9c9dc; white-space: pre-wrap;
+    word-break: break-word; max-height: 260px; overflow-y: auto; padding-right: 6px;
+    border-left: 2px solid var(--line); padding-left: 12px; }
+  .cb-statement.collapsed { max-height: 88px; }
+  .cb-toggle { background: none; border: none; color: var(--accent); cursor: pointer;
+    font-size: 11px; padding: 6px 0 0; }
+  .cb-examples { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .cb-examples pre { background: #0e0e16; border: 1px solid var(--line); border-radius: 4px;
+    padding: 8px; font-family: "SF Mono", Menlo, monospace; font-size: 11px;
+    color: #d4d4f0; overflow-x: auto; }
+  .cb-examples .lbl { font-size: 9px; letter-spacing: 1.5px; color: var(--dim); margin-bottom: 3px; }
+
+  .cb-phase { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 12px; color: var(--dim); margin-bottom: 12px; }
+  .cb-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); }
+  .cb-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  .cb-chip.thinking .dot { background: var(--accent); animation: pulse 1s infinite; }
+  .cb-chip.submitted .dot { background: var(--good); }
+  .cb-chip.none .dot { background: var(--bad); }
+
+  .cb-versus { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .cb-side { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; min-width: 0; }
+  .cb-side.win { border-color: rgba(0,229,160,0.5); box-shadow: 0 0 0 1px rgba(0,229,160,0.15); }
+  .cb-side .who { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .cb-side .who b { font-size: 13px; }
+  .cb-side .who .tag { font-size: 10px; color: var(--good); letter-spacing: 1px; }
+  .cb-side .model { font-size: 10px; color: var(--accent); word-break: break-all; margin-bottom: 8px; }
+  .cb-score { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .cb-score small { font-size: 11px; font-weight: 500; color: var(--dim); }
+  .cb-meter { height: 5px; border-radius: 3px; background: #0e0e16; overflow: hidden; margin: 6px 0 8px; }
+  .cb-meter i { display: block; height: 100%; background: var(--good); }
+  .cb-meter i.part { background: var(--warn); }
+  .cb-meter i.none { background: var(--bad); }
+  .cb-facts { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--dim); }
+  .cb-facts b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .cb-dots { display: flex; flex-wrap: wrap; gap: 3px; margin: 8px 0; }
+  .cb-dots span { width: 11px; height: 11px; border-radius: 3px; background: #2a2a3c; }
+  .cb-dots span.pass { background: var(--good); }
+  .cb-dots span.fail { background: var(--bad); }
+  .cb-dots span.error { background: #b05cff; }
+  .cb-dots span.timeout { background: var(--warn); }
+  .cb-fail { background: #16101a; border: 1px solid rgba(255,77,109,0.3); border-radius: 6px;
+    padding: 8px; margin-top: 6px; font-size: 11px; }
+  .cb-fail .k { color: var(--dim); font-size: 10px; letter-spacing: 1px; }
+  .cb-fail pre { font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: #e8d4d8;
+    white-space: pre-wrap; word-break: break-word; margin: 2px 0 6px; max-height: 90px; overflow: auto; }
+  details.cb-src { margin-top: 8px; }
+  details.cb-src summary { cursor: pointer; color: var(--dim); font-size: 11px; }
+  details.cb-src pre { font-family: "SF Mono", Menlo, monospace; font-size: 11px; color: #d4d4f0;
+    background: #0e0e16; border: 1px solid var(--line); border-radius: 4px; padding: 10px;
+    margin-top: 6px; white-space: pre; overflow: auto; max-height: 340px; }
+
+  .cb-history { margin-top: 16px; }
+  .cb-history h4 { font-size: 10px; letter-spacing: 2px; color: var(--dim); margin-bottom: 8px; }
+  .cb-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; font-size: 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; }
+  .cb-row .n { color: var(--dim); font-size: 11px; min-width: 26px; }
+  .cb-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cb-row .sc { font-variant-numeric: tabular-nums; color: var(--dim); white-space: nowrap; }
+  .cb-row .sc b.win { color: var(--good); }
+
   .coord { position: absolute; font-size: 9px; color: rgba(0,0,0,0.45); }
   .coord.file { bottom: 1px; right: 3px; }
   .coord.rank { top: 1px; left: 3px; }
@@ -229,7 +303,7 @@
 </div>
 
 <div class="main">
-  <div class="stage">
+  <div class="stage" id="stage">
     <div class="scorebar">
       <div class="player" id="p0">
         <div class="color">WHITE</div>
@@ -247,10 +321,11 @@
         <div class="rating" style="display:none"></div>
       </div>
     </div>
-    <div class="board-wrap">
+    <div class="board-wrap" id="board-wrap">
       <div class="board" id="board" role="img" aria-label="Chess board"></div>
     </div>
     <div class="say" id="say" aria-live="polite"></div>
+    <div class="codearena" id="codearena" hidden></div>
   </div>
 
   <div class="sidebar">
@@ -364,8 +439,25 @@
       <select id="s-mode"><option value="game">Board Game</option><option value="code">Code Battle</option></select></div>
     <div class="field" id="s-game-field"><label for="s-game">Game</label>
       <select id="s-game"><option value="chess">Chess</option><option value="othello">Othello</option></select></div>
-    <div class="field" id="s-problem-field" style="display:none"><label for="s-problem">Problems (random, mixed difficulty)</label>
-      <input id="s-problem" type="number" min="1" max="20" value="3"></div>
+    <div id="s-problem-field" style="display:none">
+      <div class="two">
+        <div class="field"><label for="s-problem">Problems per battle</label>
+          <input id="s-problem" type="number" min="1" max="20" value="3"></div>
+        <div class="field"><label for="s-code-remote">Real contest problems</label>
+          <select id="s-code-remote"><option value="true">Include</option><option value="false">Local bank only</option></select></div>
+      </div>
+      <div class="two">
+        <div class="field"><label for="s-code-minrating">Min rating</label>
+          <input id="s-code-minrating" type="number" min="800" max="3500" step="100"></div>
+        <div class="field"><label for="s-code-maxrating">Max rating</label>
+          <input id="s-code-maxrating" type="number" min="800" max="3500" step="100"></div>
+      </div>
+      <div class="field">
+        <div class="hint" id="s-bank-status">bank: —</div>
+        <button id="s-bank-refresh" type="button" style="margin-top:6px;padding:7px 10px;border-radius:4px;border:1px solid var(--line);background:var(--panel2);color:var(--text);cursor:pointer;font-size:12px">Fetch more contest problems</button>
+        <div class="hint">Codeforces problems via DeepMind CodeContests, filtered and self-validated before use.</div>
+      </div>
+    </div>
     <div class="two">
       <div class="field"><label for="s-games">Games in series</label><input id="s-games" type="number" min="1" max="100"></div>
       <div class="field"><label for="s-maxplies">Ply limit</label><input id="s-maxplies" type="number" min="20" max="1000"></div>
@@ -545,7 +637,8 @@ function renderStats() {
   $("status").textContent = state.status;
   $("status").className = "status " + state.status;
   $("score").textContent = state.series_score;
-  $("format").textContent = `BEST OF ${state.total_games}`;
+  $("format").textContent = isCodeMode()
+    ? `${state.total_games} PROBLEMS` : `BEST OF ${state.total_games}`;
   renderRound();
 
   for (let i = 0; i < 2; i++) {
@@ -556,11 +649,13 @@ function renderStats() {
     const ratingEl = el.querySelector(".rating");
     ratingEl.textContent = p.rating > 0 ? p.rating : "";
     ratingEl.style.display = p.rating > 0 ? "" : "none";
-    el.querySelector(".color").textContent = p.color === "white" ? "WHITE" : "BLACK";
+    el.querySelector(".color").textContent = isCodeMode()
+      ? `PLAYER ${i + 1}`
+      : (p.color === "white" ? "WHITE" : "BLACK");
 
     $(`card${i}`).innerHTML = `
       <div class="pname">${esc(friendlyName(p.label))}</div>
-      <div class="pcolor">${p.color === "white" ? "WHITE" : "BLACK"}</div>
+      <div class="pcolor">${isCodeMode() ? "PLAYER " + (i + 1) : (p.color === "white" ? "WHITE" : "BLACK")}</div>
       <div class="pmodel">${esc(friendlyName(p.model))}</div>
       <div class="wdl"><span class="w">${p.wins}</span>/<span class="d">${p.draws}</span>/<span class="l">${p.losses}</span></div>
       <div class="row"><span class="k">Moves</span><span class="v">${p.moves}</span></div>
@@ -580,9 +675,10 @@ function renderStats() {
 }
 
 function renderRound() {
-  $("round").textContent = state.game_no
-    ? `Game ${state.game_no} of ${state.total_games} · ply ${state.plies}`
-    : "not started";
+  if (!state.game_no) { $("round").textContent = "not started"; return; }
+  $("round").textContent = isCodeMode()
+    ? `Round ${state.game_no} of ${state.total_games}`
+    : `Game ${state.game_no} of ${state.total_games} · ply ${state.plies}`;
 }
 
 function renderSay() {
@@ -604,87 +700,231 @@ function fenToSquares(fen) {
   return squares;
 }
 
+function isCodeMode() {
+  return ((state && state.settings && state.settings.mode) || "game") === "code";
+}
+
 function renderBoard() {
-  const mode = (state.settings && state.settings.mode) || state.mode || "game";
-  if (mode === "code") return renderCodeBattle();
+  const code = isCodeMode();
+  document.body.classList.toggle("mode-code", code);
+  $("codearena").hidden = !code;
+  if (code) {
+    $("board").replaceChildren();   // drop the hidden board so it cannot be read out
+    return renderCodeBattle();
+  }
   const gameType = (state.settings && state.settings.game_type) || state.game_type || "chess";
   if (gameType === "othello") return renderOthelloBoard();
   return renderChessBoard();
 }
 
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function badge(text, cls) { return el("span", "badge " + (cls || ""), text); }
+
 function renderCodeBattle() {
-  const boardEl = $("board");
+  const host = $("codearena");
   const cb = state.code_battle;
   const frag = document.createDocumentFragment();
 
-  if (!cb || !cb.rounds) {
-    // Placeholder before a battle runs.
-    const ph = document.createElement("div");
-    ph.className = "cb-placeholder";
-    ph.textContent = "Pick a problem count and press Start series.\nRandom problems of mixed difficulty will be drawn.";
-    frag.appendChild(ph);
-    boardEl.replaceChildren(frag);
-    boardEl.setAttribute("aria-label", "Code battle placeholder");
+  if (!cb || (!cb.rounds?.length && !cb.current)) {
+    const empty = el("div", "cb-empty");
+    empty.appendChild(el("strong", null, "No battle yet"));
+    empty.appendChild(document.createTextNode(
+      "Press Start series. Both models get the same problems — "
+      + "curated classics plus real Codeforces problems — and a sandboxed judge "
+      + "scores every submission on hidden tests."));
+    frag.appendChild(empty);
+    host.replaceChildren(frag);
     return;
   }
 
-  const rounds = cb.rounds || [];
-  const p0 = cb.player0, p1 = cb.player1;
-  const winner = cb.winner;
-  const winLabel = winner === 0 ? (p0 && p0.label) : winner === 1 ? (p1 && p1.label) : "Draw";
-
-  // Header: overall progress + winner.
-  const head = document.createElement("div");
-  head.className = "cb-head";
-  const title = document.createElement("div");
-  title.className = "cb-title";
-  title.textContent = `CODE BATTLE — ${cb.current}/${cb.total} rounds`;
-  head.appendChild(title);
-  const verdict = document.createElement("div");
-  verdict.className = "cb-verdict";
-  const score = p0 && p1 ? `${p0.label} ${p0.score}–${p1.score} ${p1.label}` : "";
-  verdict.textContent = winLabel === "Draw" ? `Draw — ${score}` : `Winner: ${winLabel} — ${score}`;
-  head.appendChild(verdict);
-  frag.appendChild(head);
-
-  // Per-round cards.
-  for (const r of rounds) {
-    const rp0 = r.player0, rp1 = r.player1;
-    const rwin = r.winner;
-    const card = document.createElement("div");
-    card.className = "cb-round";
-    const rhead = document.createElement("div");
-    rhead.className = "cb-round-head";
-    const w0 = rwin === 0, w1 = rwin === 1;
-    rhead.textContent =
-      `R${r.round || rounds.indexOf(r) + 1} ${r.title} (${r.difficulty}) — ` +
-      `${w0 ? "✓ " : ""}${rp0.label} ${rp0.passed}/${rp0.total} · ${rp0.runtime_ms}ms` +
-      ` | ${w1 ? "✓ " : ""}${rp1.label} ${rp1.passed}/${rp1.total} · ${rp1.runtime_ms}ms`;
-    card.appendChild(rhead);
-    // Show both solutions.
-    for (const [i, rp] of [[0, rp0], [1, rp1]]) {
-      const code = document.createElement("details");
-      code.className = "cb-sol";
-      const sum = document.createElement("summary");
-      sum.textContent = `${rp.label} ${rwin === i ? "(winner)" : ""}`;
-      code.appendChild(sum);
-      if (rp.compile_error) {
-        const err = document.createElement("pre");
-        err.className = "cb-err";
-        err.textContent = rp.compile_error.slice(0, 300);
-        code.appendChild(err);
-      }
-      const pre = document.createElement("pre");
-      pre.className = "cb-code";
-      pre.textContent = rp.solution || "(no solution)";
-      code.appendChild(pre);
-      card.appendChild(code);
+  // The round in flight: statement first, so there is something to read while
+  // the models think, then whatever we know about their submissions.
+  if (cb.current) {
+    frag.appendChild(renderProblemCard(cb.current.problem, cb.current.index, cb.current.total));
+    const phase = el("div", "cb-phase");
+    phase.appendChild(el("span", null,
+      cb.current.phase === "judging" ? "Judging submissions…" : "Models are working…"));
+    for (const pl of cb.current.players || []) {
+      const cls = pl.state === "submitted" ? "submitted" : pl.state === "thinking" ? "thinking" : "none";
+      const chip = el("span", "cb-chip " + cls);
+      chip.appendChild(el("i", "dot"));
+      chip.appendChild(el("span", null, `${pl.label} — ${pl.state}`));
+      phase.appendChild(chip);
     }
-    frag.appendChild(card);
+    frag.appendChild(phase);
   }
 
-  boardEl.replaceChildren(frag);
-  boardEl.setAttribute("aria-label", `Code battle: ${cb.total} rounds`);
+  const rounds = cb.rounds || [];
+  const latest = rounds[rounds.length - 1];
+  if (latest && !cb.current) {
+    frag.appendChild(renderProblemCard(latest.problem, latest.round, cb.total));
+    frag.appendChild(renderVersus(latest));
+  }
+
+  if (rounds.length) {
+    const hist = el("div", "cb-history");
+    hist.appendChild(el("h4", null, "ROUNDS"));
+    for (const r of rounds) {
+      const row = el("div", "cb-row");
+      row.appendChild(el("span", "n", `R${r.round}`));
+      row.appendChild(badge(r.problem.difficulty, r.problem.difficulty));
+      row.appendChild(el("span", "t", r.problem.title));
+      const sc = el("span", "sc");
+      const a = r.players[0], b = r.players[1];
+      const wrap = (side, idx) => {
+        const node = el("b", r.winner === idx ? "win" : null,
+          `${side.result.passed}/${side.result.total}`);
+        return node;
+      };
+      sc.appendChild(el("span", null, a.label + " "));
+      sc.appendChild(wrap(a, 0));
+      sc.appendChild(el("span", null, " · " + b.label + " "));
+      sc.appendChild(wrap(b, 1));
+      row.appendChild(sc);
+      hist.appendChild(row);
+    }
+    frag.appendChild(hist);
+  }
+
+  host.replaceChildren(frag);
+}
+
+function renderProblemCard(problem, index, total) {
+  const card = el("div", "cb-problem");
+  if (!problem) return card;
+  card.appendChild(el("div", "cb-round-no", `ROUND ${index} OF ${total}`));
+  card.appendChild(el("div", "cb-name", problem.title));
+
+  const badges = el("div", "cb-badges");
+  badges.appendChild(badge(problem.difficulty, problem.difficulty));
+  if (problem.rating) badges.appendChild(badge("rating " + problem.rating));
+  badges.appendChild(badge(problem.source === "code_contests" ? "Codeforces" : "curated", "src"));
+  badges.appendChild(badge(problem.kind === "stdio" ? "stdin/stdout" : "function"));
+  badges.appendChild(badge(problem.test_count + " tests"));
+  for (const t of (problem.tags || []).slice(0, 5)) badges.appendChild(badge(t));
+  card.appendChild(badges);
+
+  const body = el("div", "cb-statement collapsed", problem.description || "");
+  card.appendChild(body);
+  const toggle = el("button", "cb-toggle", "Show full statement");
+  toggle.onclick = () => {
+    const open = body.classList.toggle("collapsed");
+    toggle.textContent = open ? "Show full statement" : "Collapse statement";
+  };
+  card.appendChild(toggle);
+
+  const examples = (problem.examples || []).filter(e => e.stdin || e.args);
+  if (examples.length) {
+    const grid = el("div", "cb-examples");
+    const ex = examples[0];
+    const mk = (label, value) => {
+      const box = el("div");
+      box.appendChild(el("div", "lbl", label));
+      box.appendChild(el("pre", null, value));
+      return box;
+    };
+    if (problem.kind === "stdio") {
+      grid.appendChild(mk("SAMPLE INPUT", ex.stdin));
+      grid.appendChild(mk("EXPECTED OUTPUT", ex.stdout));
+    } else {
+      grid.appendChild(mk("SAMPLE ARGS", JSON.stringify(ex.args)));
+      grid.appendChild(mk("EXPECTED", JSON.stringify(ex.expected)));
+    }
+    card.appendChild(grid);
+  }
+  return card;
+}
+
+function renderVersus(round) {
+  const wrap = el("div", "cb-versus");
+  round.players.forEach((side, idx) => wrap.appendChild(renderSide(side, idx === round.winner)));
+  return wrap;
+}
+
+function renderSide(side, won) {
+  const r = side.result;
+  const box = el("div", "cb-side" + (won ? " win" : ""));
+
+  const who = el("div", "who");
+  who.appendChild(el("b", null, side.label));
+  if (won) who.appendChild(el("span", "tag", "WINNER"));
+  box.appendChild(who);
+  box.appendChild(el("div", "model", side.model || ""));
+
+  const score = el("div", "cb-score");
+  score.appendChild(document.createTextNode(`${r.passed}`));
+  score.appendChild(el("small", null, ` / ${r.total} tests`));
+  box.appendChild(score);
+
+  const pct = r.total ? (r.passed / r.total) * 100 : 0;
+  const meter = el("div", "cb-meter");
+  const bar = el("i", pct === 100 ? "" : pct > 0 ? "part" : "none");
+  bar.style.width = Math.max(pct, r.passed ? 3 : 100) + "%";
+  if (!r.passed) bar.style.width = "100%";
+  meter.appendChild(bar);
+  box.appendChild(meter);
+
+  const facts = el("div", "cb-facts");
+  const fact = (k, v) => {
+    const f = el("span");
+    f.appendChild(document.createTextNode(k + " "));
+    f.appendChild(el("b", null, v));
+    facts.appendChild(f);
+  };
+  fact("runtime", `${Math.round(r.runtime_ms)}ms`);
+  if (r.stress_status && r.stress_status !== "skipped") {
+    fact("scaled input", r.stress_status + (r.stress_ms ? ` (${Math.round(r.stress_ms)}ms)` : ""));
+  }
+  box.appendChild(facts);
+
+  if (r.cases?.length) {
+    const dots = el("div", "cb-dots");
+    for (const c of r.cases) {
+      const d = el("span", c.status);
+      d.title = `${c.label || "case"} — ${c.status}`;
+      dots.appendChild(d);
+    }
+    box.appendChild(dots);
+  }
+
+  if (r.compile_error) {
+    const fail = el("div", "cb-fail");
+    fail.appendChild(el("div", "k", "DID NOT RUN"));
+    fail.appendChild(el("pre", null, r.compile_error));
+    box.appendChild(fail);
+  } else {
+    const bad = (r.cases || []).find(c => c.status !== "pass");
+    if (bad) {
+      const fail = el("div", "cb-fail");
+      fail.appendChild(el("div", "k", `FAILED — ${bad.label || "case"} (${bad.status})`));
+      if (bad.detail) fail.appendChild(el("pre", null, bad.detail));
+      if (bad.status === "fail") {
+        fail.appendChild(el("div", "k", "EXPECTED"));
+        fail.appendChild(el("pre", null, bad.expected));
+        fail.appendChild(el("div", "k", "GOT"));
+        fail.appendChild(el("pre", null, bad.got || "(nothing)"));
+      }
+      box.appendChild(fail);
+    }
+  }
+  if (r.stress_detail) {
+    const note = el("div", "cb-fail");
+    note.appendChild(el("div", "k", "SCALED INPUT"));
+    note.appendChild(el("pre", null, r.stress_detail));
+    box.appendChild(note);
+  }
+
+  const src = el("details", "cb-src");
+  src.appendChild(el("summary", null, `${side.label}'s submission`));
+  src.appendChild(el("pre", null, side.solution || "(no solution submitted)"));
+  box.appendChild(src);
+  return box;
 }
 
 function renderChessBoard() {
@@ -822,8 +1062,10 @@ function gatherSettings() {
   return {
     mode: $("s-mode").value || "game",
     game_type: $("s-game").value || "chess",
-    code_problem: "two-sum",
     code_count: numOr($("s-problem"), live.code_count ?? 3),
+    code_remote: $("s-code-remote").value === "true",
+    code_min_rating: numOr($("s-code-minrating"), live.code_min_rating ?? 1300),
+    code_max_rating: numOr($("s-code-maxrating"), live.code_max_rating ?? 2400),
     players,
     games: numOr($("s-games"), live.games ?? 4),
     max_plies: numOr($("s-maxplies"), live.max_plies ?? 200),
@@ -833,6 +1075,17 @@ function gatherSettings() {
     commentary: $("s-commentary").value === "true",
     include_previous: $("s-inclprev").value === "true",
   };
+}
+
+function renderBankStatus(bank) {
+  const node = $("s-bank-status");
+  if (!node) return;
+  if (!bank) { node.textContent = "bank: unknown"; return; }
+  const mix = Object.entries(bank.by_difficulty || {})
+    .map(([k, v]) => `${v} ${k}`).join(" · ");
+  node.textContent = `bank: ${bank.local} curated + ${bank.remote} contest`
+    + (mix ? ` (${mix})` : "")
+    + (bank.remote_error ? ` — ${bank.remote_error}` : "");
 }
 
 function personaFor(systemPrompt) {
@@ -870,6 +1123,10 @@ function openDrawer() {
   toggleModeFields($("s-mode").value);
   $("s-game").value = s.game_type || "chess";
   $("s-problem").value = s.code_count || 3;
+  $("s-code-remote").value = String(s.code_remote !== false);
+  $("s-code-minrating").value = s.code_min_rating || 1300;
+  $("s-code-maxrating").value = s.code_max_rating || 2400;
+  renderBankStatus(s.bank);
   $("s-games").value = s.games;
   $("s-maxplies").value = s.max_plies;
   $("s-retries").value = s.retries;
@@ -995,6 +1252,31 @@ $("scrim").onclick = closeDrawer;
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && $("drawer").classList.contains("open")) closeDrawer();
 });
+
+$("s-bank-refresh").onclick = async () => {
+  const btn = $("s-bank-refresh");
+  const was = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Fetching…";
+  try {
+    const r = await fetch("/api/bank/refresh", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        target: 12,
+        min_rating: numOr($("s-code-minrating"), 1300),
+        max_rating: numOr($("s-code-maxrating"), 2400),
+      }),
+    });
+    const d = await r.json();
+    renderBankStatus(d);
+  } catch (e) {
+    $("s-bank-status").textContent = "bank: fetch failed";
+  } finally {
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+};
 
 $("s-save").onclick = () => {
   send({action: "update_settings", settings: gatherSettings()});

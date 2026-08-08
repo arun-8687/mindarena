@@ -32,8 +32,11 @@ from urllib.parse import urlsplit
 import chess
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from games import create_engine, GAMES, GameEngine
-from codebattle import PROBLEMS as CODE_PROBLEMS, get_problem, judge as judge_code, decide_winner
+from games import (create_engine, GAMES, GameEngine,
+                   parse_move_text as games_parse_move_text,
+                   resolve_move as games_resolve_move)
+from codebattle import judge as judge_code, decide_winner, verdict_line
+from problembank import BANK
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
@@ -144,8 +147,10 @@ class Settings:
     include_previous: bool = True
     speed_ms: int = 0          # delay between moves
     game_type: str = "chess"   # chess | othello
-    code_problem: str = "two-sum"  # (unused now; kept for compat)
-    code_count: int = 3        # number of random problems per code battle
+    code_count: int = 3        # number of problems per code battle
+    code_remote: bool = True   # include real contest problems from the remote archive
+    code_min_rating: int = 1300
+    code_max_rating: int = 2400
     mode: str = "game"         # game | code
     prompt_template: str = (
         "You are {player}, playing a game of chess as {color} against {opponent}.\n"
@@ -420,10 +425,11 @@ class MindArenaEngine:
         s.mode = d.get("mode", s.mode)
         if s.mode not in ("game", "code"):
             s.mode = "game"
-        s.code_problem = d.get("code_problem", s.code_problem)
-        if not get_problem(s.code_problem):
-            s.code_problem = "two-sum"
         s.code_count = _clamp_int(d.get("code_count"), s.code_count, 1, 20)
+        if "code_remote" in d:
+            s.code_remote = bool(d["code_remote"])
+        s.code_min_rating = _clamp_int(d.get("code_min_rating"), s.code_min_rating, 800, 3500)
+        s.code_max_rating = _clamp_int(d.get("code_max_rating"), s.code_max_rating, 800, 3500)
         if d.get("prompt_template"):
             s.prompt_template = d["prompt_template"]
 
@@ -541,21 +547,29 @@ class MindArenaEngine:
 
     # -- code battle --------------------------------------------------------
     async def _run_code_battle(self):
-        """Run `code_count` random problems (mixed difficulty). Winner of each
-        round scores a point; the series is best of N."""
+        """Run `code_count` problems head-to-head. Each round is worth a point."""
         s = self.settings
-        import random
-        # Pick N distinct random problems, shuffling difficulty mix.
-        problems = random.sample(CODE_PROBLEMS, min(s.code_count, len(CODE_PROBLEMS)))
-        self.state.game_no = 1
+        sources = ("local", "code_contests") if s.code_remote else ("local",)
+        problems = BANK.select(s.code_count, sources=sources)
+        if not problems:
+            self.state.status = "ERROR"
+            self.state.error = "no problems available"
+            await self._log("error", "Code battle: the problem bank is empty.")
+            return
+
+        self.state.game_no = 0
+        self.state.total_games = len(problems)   # a code battle is N problems, not N games
         self.state.move_list = []
         self.state.last_move = ""
         self.state.last_say = ""
         self.state.plies = 0
-        self.state.code_battle = None
         self.state.game_results = []
+        self.state.code_battle = {"rounds": [], "current": None,
+                                  "total": len(problems), "winner": None}
+        mix = ", ".join(f"{p.difficulty}{f'/{p.rating}' if p.rating else ''}" for p in problems)
         await self._log("info",
-            f"CODE BATTLE — {len(problems)} problems ({s.players[0].label} vs {s.players[1].label})")
+            f"CODE BATTLE — {len(problems)} problems ({mix}): "
+            f"{s.players[0].label} vs {s.players[1].label}")
 
         rounds = []
         for i, problem in enumerate(problems, start=1):
@@ -565,133 +579,213 @@ class MindArenaEngine:
             if self._stop.is_set():
                 break
             self.state.game_no = i
-            await self._log("info", f"Round {i}/{len(problems)}: {problem.title} ({problem.difficulty})")
-
-            # Ask both players in parallel for their solutions.
-            results = await asyncio.gather(
-                self._request_code_solution(0, problem),
-                self._request_code_solution(1, problem),
-            )
-            sol0, sol1 = results
-
-            # Judge each.
-            r0 = judge_code(problem, sol0) if sol0 else None
-            r1 = judge_code(problem, sol1) if sol1 else None
-
-            if r0 is None or r1 is None:
-                winner = -1
-                if r0 is not None and r1 is None:
-                    winner = 0
-                elif r1 is not None and r0 is None:
-                    winner = 1
-            else:
-                winner = decide_winner(r0, r1)
-
-            # Update round-level stats.
-            p0, p1 = self.state.players[0], self.state.players[1]
-            if winner == 0:
-                p0.wins += 1; p1.losses += 1
-            elif winner == 1:
-                p1.wins += 1; p0.losses += 1
-            else:
-                p0.draws += 1; p1.draws += 1
-
-            rounds.append({
-                "round": i, "problem": problem.slug, "title": problem.title,
-                "difficulty": problem.difficulty, "winner": winner,
-                "player0": {
-                    "label": s.players[0].label,
-                    "solution": sol0,
-                    "passed": r0.passed if r0 else 0,
-                    "total": len(problem.tests),
-                    "runtime_ms": round(r0.runtime_ms, 2) if r0 else 0,
-                    "compile_error": (r0.compile_error if r0 else ("no solution" if not sol0 else "")),
-                },
-                "player1": {
-                    "label": s.players[1].label,
-                    "solution": sol1,
-                    "passed": r1.passed if r1 else 0,
-                    "total": len(problem.tests),
-                    "runtime_ms": round(r1.runtime_ms, 2) if r1 else 0,
-                    "compile_error": (r1.compile_error if r1 else ("no solution" if not sol1 else "")),
-                },
-            })
-            await self._log("info",
-                f"Round {i} result: {s.players[0].label} {p0.wins}-{p1.wins} {s.players[1].label} "
-                f"({['P0','P1','draw'][winner]})")
-            # Emit partial state after each round so the UI updates live.
-            self.state.code_battle = {"rounds": rounds, "current": i, "total": len(problems)}
+            round_state = await self._play_code_round(i, len(problems), problem)
+            if round_state is None:
+                break
+            rounds.append(round_state)
+            self.state.code_battle = {
+                "rounds": rounds, "current": None,
+                "total": len(problems), "winner": None,
+            }
             await self._broadcast_state()
 
         p0, p1 = self.state.players[0], self.state.players[1]
-        self.state.series_score = f"{_points(p0)}–{_points(p1)}"
-        # Final result carries the per-round details + overall winner.
-        final_winner = 0 if p0.wins > p1.wins else 1 if p1.wins > p0.wins else -1
+        await self._update_score()
+        final = 0 if p0.wins > p1.wins else 1 if p1.wins > p0.wins else -1
         self.state.code_battle = {
-            "rounds": rounds, "current": len(rounds), "total": len(problems),
-            "winner": final_winner,
+            "rounds": rounds, "current": None, "total": len(problems),
+            "winner": final,
             "player0": {"label": s.players[0].label, "score": p0.wins},
             "player1": {"label": s.players[1].label, "score": p1.wins},
         }
         await self._log("info",
-            f"Code battle result: winner = {['P0','P1','draw'][final_winner]} "
-            f"({p0.wins}-{p1.wins})")
+            f"Code battle result: {p0.wins}-{p1.wins} "
+            f"({'draw' if final < 0 else s.players[final].label + ' wins'})")
         await self._broadcast_state()
 
+    async def _play_code_round(self, index: int, total: int, problem) -> Optional[dict]:
+        """One problem: both models write, both submissions are judged, winner scored."""
+        s = self.settings
+        # Publish the problem before anyone starts writing, so the UI has
+        # something to show during the (often long) thinking phase.
+        self.state.code_battle = {
+            **(self.state.code_battle or {}),
+            "current": {
+                "index": index, "total": total, "phase": "thinking",
+                "problem": problem.public_dict(),
+                "players": [{"label": p.label, "state": "thinking"} for p in s.players],
+            },
+        }
+        await self._broadcast_state()
+        await self._log("info",
+            f"Round {index}/{total}: {problem.title} "
+            f"[{problem.difficulty}{f' · {problem.rating}' if problem.rating else ''}"
+            f" · {problem.source}]")
+
+        solutions = await asyncio.gather(
+            self._request_code_solution(0, problem),
+            self._request_code_solution(1, problem),
+        )
+        if self._stop.is_set():
+            return None
+
+        cb = self.state.code_battle or {}
+        if cb.get("current"):
+            cb["current"]["phase"] = "judging"
+            cb["current"]["players"] = [
+                {"label": p.label, "state": "submitted" if sol else "no answer"}
+                for p, sol in zip(s.players, solutions)
+            ]
+            await self._broadcast_state()
+
+        # The judge spawns subprocesses and blocks for seconds at a time; run it
+        # off the event loop so the board, log and keepalive pings keep flowing.
+        seed = (hash(problem.slug) ^ index) & 0xFFFFFFFF
+        # Judged one after the other, deliberately. Running both at once makes
+        # them contend for the same cores, and since ties are broken on runtime
+        # that would decide rounds by scheduler luck rather than by the code.
+        results = []
+        for sol in solutions:
+            results.append(await asyncio.to_thread(judge_code, problem, sol, seed))
+        winner = decide_winner(results[0], results[1])
+
+        p0, p1 = self.state.players[0], self.state.players[1]
+        if winner == 0:
+            p0.wins += 1
+            p1.losses += 1
+        elif winner == 1:
+            p1.wins += 1
+            p0.losses += 1
+        else:
+            p0.draws += 1
+            p1.draws += 1
+
+        for idx, res in enumerate(results):
+            await self._log("info" if idx == winner else "warn",
+                f"  {s.players[idx].label}: {verdict_line(res)}")
+        await self._log("move",
+            f"Round {index}: "
+            + ("draw" if winner < 0 else f"{s.players[winner].label} takes it"))
+
+        self.state.game_results.append({
+            "game": index, "white": s.players[0].label, "black": s.players[1].label,
+            "result": "1-0" if winner == 0 else "0-1" if winner == 1 else "1/2-1/2",
+            "reason": problem.title, "moves": len(problem.tests),
+        })
+        await self._update_score()
+        return {
+            "round": index,
+            "problem": problem.public_dict(),
+            "winner": winner,
+            "players": [
+                {"label": s.players[i].label, "model": s.players[i].model,
+                 "solution": solutions[i], "result": results[i].public_dict()}
+                for i in (0, 1)
+            ],
+        }
+
     async def _request_code_solution(self, player_idx: int, problem) -> str:
-        """Ask a player to write code for the problem. Returns source code."""
+        """Ask a player for a solution, retrying transient failures.
+
+        A single network blip used to hand the round to the opponent; solution
+        requests now get the same retry treatment as chess moves.
+        """
         s = self.settings
         p = s.players[player_idx]
+        label = p.label or p.model
+        if problem.kind == "stdio":
+            task = (
+                "Write a complete Python 3 program that reads from standard input "
+                "and writes the answer to standard output.\n"
+                "Do not define a function to be called — the program is run as a "
+                "script and must do the reading and printing itself.\n"
+                "Input and output formats are described in the statement above."
+            )
+        else:
+            task = (
+                f"Write a Python function with exactly this signature:\n"
+                f"    {problem.signature}\n\n{problem.starter_code}"
+            )
+        limit_note = (f"Your program must finish each test within "
+                      f"{problem.time_limit_s:g} seconds, so mind the complexity.")
         prompt = (
-            f"You are {p.label}, competing in a coding battle against "
+            f"You are {label}, competing head-to-head against "
             f"{s.players[1 - player_idx].label}.\n\n"
-            f"PROBLEM ({problem.difficulty}): {problem.title}\n\n"
-            f"{problem.description}\n\n"
-            f"You must write a Python function with this exact signature:\n"
-            f"    {problem.signature}\n\n"
-            f"Return ONLY the complete Python source code for your function — no "
-            f"explanations, no markdown fences. Just the code.\n\n"
-            f"Starter template:\n{problem.starter_code}"
+            f"PROBLEM ({problem.difficulty}"
+            f"{f', Codeforces rating {problem.rating}' if problem.rating else ''}): "
+            f"{problem.title}\n\n{problem.description}\n\n{task}\n\n{limit_note}\n\n"
+            f"Reply with Python source code only — no prose, no markdown fences."
         )
         system = (
-            "You are an expert competitive programmer. You write clean, correct, "
-            "efficient Python code. Respond with only the function definition — no "
-            "markdown, no explanation, no test code."
+            "You are an elite competitive programmer. You write correct, efficient "
+            "Python. You handle edge cases and you choose algorithms that fit the "
+            "input limits. Reply with source code only."
         )
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": prompt}]
         body = {
             "model": p.model,
-            "messages": messages,
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": prompt}],
             "temperature": p.temperature,
-            "max_tokens": 4000,
+            "max_tokens": max(s.max_tokens, 4000),
         }
-        url = _endpoint(p.base_url or s.base_url, "/chat/completions")
+        if p.effort and p.effort != "default":
+            body["reasoning_effort"] = p.effort
         headers = {"Authorization": f"Bearer {self._resolve_key(p)}",
                    "Content-Type": "application/json"}
-        await self._log("thinking", f"{p.label}: writing solution…")
-        try:
-            r = await self._http.post(url, json=body, headers=headers)
-        except (httpx.TimeoutException, httpx.TransportError) as e:
-            await self._log("error", f"{p.label}: network error: {e}")
-            return ""
-        if r.status_code != 200:
-            await self._log("error", f"{p.label}: HTTP {r.status_code}: {r.text[:200]}")
-            return ""
-        try:
-            data = r.json()
-            content = data["choices"][0]["message"]["content"] or ""
-        except (ValueError, KeyError, IndexError) as e:
-            await self._log("error", f"{p.label}: malformed response")
-            return ""
-        # Strip markdown fences if the model wrapped in them anyway.
-        content = content.strip()
-        if content.startswith("```"):
-            import re
-            content = re.sub(r"^```(?:python)?\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
-        await self._log("move", f"{p.label}: submitted solution ({len(content)} chars)")
-        return content
+
+        attempts = max(1, s.retries)
+        for attempt in range(1, attempts + 1):
+            if self._stop.is_set():
+                return ""
+            await self._pause.wait()
+            await self._log("thinking",
+                f"{label}: writing a solution… (attempt {attempt})")
+            t0 = time.monotonic()
+            try:
+                url = _endpoint(p.base_url or s.base_url, "/chat/completions")
+                r = await self._http.post(url, json=body, headers=headers)
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                await self._log("warn", f"{label}: network error: {str(e)[:120]}")
+                await self._sleep(min(2 ** attempt, 20))
+                continue
+            except FatalLLMError as e:
+                await self._log("error", f"{label}: {e}")
+                return ""
+            if r.status_code != 200:
+                transient = r.status_code in (408, 409, 425, 429) or r.status_code >= 500
+                await self._log("warn" if transient else "error",
+                    f"{label}: HTTP {r.status_code}: {r.text[:160]}")
+                if not transient:
+                    return ""
+                await self._sleep(min(2 ** attempt, 20))
+                continue
+            try:
+                data = r.json()
+                content = data["choices"][0]["message"]["content"] or ""
+            except (ValueError, KeyError, IndexError, TypeError):
+                await self._log("warn", f"{label}: malformed response")
+                await self._sleep(min(2 ** attempt, 20))
+                continue
+
+            self._record_usage(player_idx, {
+                "total_tokens": (data.get("usage") or {}).get("total_tokens", 0),
+                "_reasoning_tokens": ((data.get("usage") or {}).get(
+                    "completion_tokens_details") or {}).get("reasoning_tokens", 0),
+                "cost": (data.get("usage") or {}).get("cost"),
+                "_ms": int((time.monotonic() - t0) * 1000),
+            })
+            self.state.players[player_idx].moves += 1
+            await self._broadcast_stats()
+
+            source = _strip_code_fences(content)
+            if not source.strip():
+                await self._log("warn", f"{label}: replied with no code")
+                continue
+            await self._log("move", f"{label}: submitted {len(source)} chars")
+            return source
+
+        await self._log("error", f"{label}: no solution after {attempts} attempts")
+        return ""
 
     # -- series loop --------------------------------------------------------
     async def _run_series(self):
@@ -994,8 +1088,10 @@ def _settings_dict(s: Settings) -> dict:
         "retries": s.retries, "network_retries": s.network_retries,
         "max_tokens": s.max_tokens, "commentary": s.commentary,
         "include_previous": s.include_previous, "speed_ms": s.speed_ms,
-        "game_type": s.game_type, "mode": s.mode, "code_problem": s.code_problem,
-        "code_count": s.code_count,
+        "game_type": s.game_type, "mode": s.mode,
+        "code_count": s.code_count, "code_remote": s.code_remote,
+        "code_min_rating": s.code_min_rating, "code_max_rating": s.code_max_rating,
+        "bank": BANK.counts(),
         "prompt_template": s.prompt_template,
     }
 
@@ -1016,79 +1112,30 @@ SAY_RE = re.compile(r'"say"\s*:\s*"([^"]*)"')
 JSON_OBJ_RE = re.compile(r"\{.*\}", re.S)
 FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 
-def _parse_move(content: str, board: chess.Board) -> tuple[str, str]:
-    """Pull (move, say) out of a model reply that is JSON, nearly JSON, or prose."""
-    move, say = "", ""
-    candidates = [content]
-    fence = FENCE_RE.search(content)
-    if fence:
-        candidates.insert(0, fence.group(1))
-    obj = JSON_OBJ_RE.search(content)
-    if obj:
-        candidates.insert(0, obj.group(0))
+# The chess-specific parsing lives with the chess engine now; these aliases keep
+# the old names working for callers and tests.
+_parse_move = games_parse_move_text
+_resolve_move = games_resolve_move
 
-    for text in candidates:
-        try:
-            data = json.loads(text.strip())
-        except (ValueError, TypeError):
-            continue
-        if isinstance(data, dict):
-            move = str(data.get("move") or "")
-            say = str(data.get("say") or "")
-            if move:
-                return move.strip(), say.strip()
 
-    m = SAN_RE.search(content)
-    if m:
-        move = m.group(1)
-    m2 = SAY_RE.search(content)
-    if m2:
-        say = m2.group(1)
+FENCE_BLOCK_RE = re.compile(r"```[ \t]*([a-zA-Z0-9_+-]*)[ \t]*\r?\n(.*?)```", re.S)
 
-    if not move:
-        # Last resort: scan prose for a token that is actually a move in this
-        # position, in either SAN or UCI. Matching against the real move list
-        # (rather than a loose SAN-shaped regex) stops ordinary English words
-        # like "bad" or "faced" from being read as moves. Prefer the last
-        # match — a model that thinks out loud names its choice at the end.
-        playable = set()
-        for m in board.legal_moves:
-            playable.add(board.san(m).rstrip("+#"))
-            playable.add(m.uci())
-        for tok in re.split(r"[\s,.;:()\[\]\"'*]+", content):
-            bare = tok.strip().rstrip("!?+#")
-            if bare and bare in playable:
-                move = bare
-    return move.strip(), say.strip()
+def _strip_code_fences(text: str) -> str:
+    """Pull source out of a reply, fenced or not.
 
-def _resolve_move(board: chess.Board, raw: str) -> Optional[chess.Move]:
-    """Turn whatever the model said into a legal Move, or None.
-
-    Accepts SAN ("Nf3"), decorated SAN ("Nf3!?"), sloppy case ("nf3") and UCI
-    ("g1f3") — models emit all four regardless of what the prompt asked for.
+    Models wrap code in markdown however firmly the prompt says not to, and some
+    add prose around it. Prefer the largest fenced block; fall back to the raw
+    text when there are no fences.
     """
-    if not raw:
-        return None
-    s = raw.strip().strip('"').strip()
-    for candidate in (s, s.rstrip("!?"), s.rstrip("!?+#")):
-        if not candidate:
-            continue
-        try:
-            return board.parse_san(candidate)
-        except (ValueError, TypeError):
-            pass
-        try:
-            move = board.parse_uci(candidate.lower())
-            if move in board.legal_moves:
-                return move
-        except (ValueError, TypeError):
-            pass
-    # Case-insensitive SAN match as a final pass.
-    want = s.rstrip("!?+#").lower()
-    for move in board.legal_moves:
-        if board.san(move).rstrip("+#").lower() == want:
-            return move
-    return None
+    blocks = [body for _lang, body in FENCE_BLOCK_RE.findall(text)]
+    if blocks:
+        return max(blocks, key=len).strip("\n")
+    stripped = text.strip()
+    if stripped.startswith("```"):        # unterminated fence
+        stripped = re.sub(r"^```[a-zA-Z0-9_+-]*[ \t]*\r?\n?", "", stripped)
+        stripped = re.sub(r"```\s*$", "", stripped)
+    return stripped.strip("\n")
+
 
 def _material(board: chess.Board, color: chess.Color) -> int:
     vals = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
@@ -1272,6 +1319,36 @@ async def models_for(req: dict):
 @app.get("/api/state")
 async def get_state():
     return engine.full_snapshot()
+
+@app.get("/api/bank")
+async def get_bank():
+    """What the code-battle problem bank currently holds."""
+    return {
+        **BANK.counts(),
+        "problems": [
+            {"slug": c.slug, "title": c.title, "difficulty": c.difficulty,
+             "rating": c.rating, "source": c.source, "tags": c.tags,
+             "kind": c.kind, "tests": len(c.tests)}
+            for c in sorted(BANK.all, key=lambda c: (c.rating, c.title))
+        ],
+    }
+
+@app.post("/api/bank/refresh")
+async def refresh_bank(req: dict | None = None):
+    """Pull more real contest problems from the remote archive."""
+    req = req or {}
+    target = _clamp_int(req.get("target"), 12, 1, 60)
+    lo = _clamp_int(req.get("min_rating"), engine.settings.code_min_rating, 800, 3500)
+    hi = _clamp_int(req.get("max_rating"), engine.settings.code_max_rating, 800, 3500)
+    lines: list[str] = []
+    try:
+        await asyncio.to_thread(BANK.refresh_remote, target, lo, hi, True, lines.append)
+    except Exception as e:
+        return JSONResponse({"error": f"{type(e).__name__}: {e}", **BANK.counts()}, 200)
+    for line in lines[-40:]:
+        await engine._log("info", line)
+    await engine._broadcast_state()
+    return {**BANK.counts(), "log": lines[-40:]}
 
 @app.get("/api/problems")
 async def list_problems():

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import abc
+import json
 from dataclasses import dataclass
 from typing import Optional
 
@@ -129,6 +130,102 @@ MOVE_RE = re.compile(r'"move"\s*:\s*"([^"]*)"')
 SAY_RE = re.compile(r'"say"\s*:\s*"([^"]*)"')
 
 
+SAN_RE = re.compile(r'"move"\\s*:\\s*"([^"]+)"')
+
+
+def parse_move_text(content: str, board: chess.Board) -> tuple[str, str]:
+    """Pull (move, say) out of a model reply that is JSON, nearly JSON, or prose."""
+    move, say = "", ""
+    candidates = [content]
+    fence = FENCE_RE.search(content)
+    if fence:
+        candidates.insert(0, fence.group(1))
+    obj = JSON_OBJ_RE.search(content)
+    if obj:
+        candidates.insert(0, obj.group(0))
+
+    for text in candidates:
+        try:
+            data = json.loads(text.strip())
+        except (ValueError, TypeError):
+            continue
+        if isinstance(data, dict):
+            move = str(data.get("move") or "")
+            say = str(data.get("say") or "")
+            if move:
+                return move.strip(), say.strip()
+
+    m = SAN_RE.search(content)
+    if m:
+        move = m.group(1)
+    m2 = SAY_RE.search(content)
+    if m2:
+        say = m2.group(1)
+
+    if not move:
+        # Last resort: scan prose for a token that is actually a move in this
+        # position, in either SAN or UCI. Matching against the real move list
+        # (rather than a loose SAN-shaped regex) stops ordinary English words
+        # like "bad" or "faced" from being read as moves. Prefer the last
+        # match — a model that thinks out loud names its choice at the end.
+        playable = set()
+        for m in board.legal_moves:
+            playable.add(board.san(m).rstrip("+#"))
+            playable.add(m.uci())
+        for tok in re.split(r"[\s,.;:()\[\]\"'*]+", content):
+            bare = tok.strip().rstrip("!?+#")
+            if bare and bare in playable:
+                move = bare
+    return move.strip(), say.strip()
+
+def resolve_move(board: chess.Board, raw: str) -> Optional[chess.Move]:
+    """Turn whatever the model said into a legal Move, or None.
+
+    Accepts SAN ("Nf3"), decorated SAN ("Nf3!?"), sloppy case ("nf3") and UCI
+    ("g1f3") — models emit all four regardless of what the prompt asked for.
+    """
+    if not raw:
+        return None
+    s = raw.strip().strip('"').strip()
+    for candidate in (s, s.rstrip("!?"), s.rstrip("!?+#")):
+        if not candidate:
+            continue
+        try:
+            return board.parse_san(candidate)
+        except (ValueError, TypeError):
+            pass
+        try:
+            move = board.parse_uci(candidate.lower())
+            if move in board.legal_moves:
+                return move
+        except (ValueError, TypeError):
+            pass
+    # Case-insensitive SAN match as a final pass.
+    want = s.rstrip("!?+#").lower()
+    for move in board.legal_moves:
+        if board.san(move).rstrip("+#").lower() == want:
+            return move
+    return None
+
+FENCE_BLOCK_RE = re.compile(r"```[ \t]*([a-zA-Z0-9_+-]*)[ \t]*\r?\n(.*?)```", re.S)
+
+def _strip_code_fences(text: str) -> str:
+    """Pull source out of a reply, fenced or not.
+
+    Models wrap code in markdown however firmly the prompt says not to, and some
+    add prose around it. Prefer the largest fenced block; fall back to the raw
+    text when there are no fences.
+    """
+    blocks = [body for _lang, body in FENCE_BLOCK_RE.findall(text)]
+    if blocks:
+        return max(blocks, key=len).strip("\n")
+    stripped = text.strip()
+    if stripped.startswith("```"):        # unterminated fence
+        stripped = re.sub(r"^```[a-zA-Z0-9_+-]*[ \t]*\r?\n?", "", stripped)
+        stripped = re.sub(r"```\s*$", "", stripped)
+    return stripped.strip("\n")
+
+
 def _extract_json_move(content: str) -> tuple[str, str]:
     """Pull (move, say) out of JSON or fenced JSON."""
     move, say = "", ""
@@ -139,7 +236,6 @@ def _extract_json_move(content: str) -> tuple[str, str]:
     obj = JSON_OBJ_RE.search(content)
     if obj:
         candidates.insert(0, obj.group(0))
-    import json
     for text in candidates:
         try:
             data = json.loads(text.strip())
@@ -173,9 +269,11 @@ class ChessEngine(GameEngine):
 
     def __init__(self):
         self.board = chess.Board()
+        self._last_san = ""
 
     def reset(self) -> None:
         self.board = chess.Board()
+        self._last_san = ""
 
     def legal_moves(self) -> list[str]:
         return [self.board.san(m) for m in self.board.legal_moves]
@@ -189,7 +287,10 @@ class ChessEngine(GameEngine):
                 move = self.board.parse_uci(move_str)
             except (ValueError, chess.IllegalMoveError):
                 return False
-        self.board.push(move)
+        # SAN has to be produced from the position *before* the move, so capture
+        # it as we push. Reading it back off move_stack afterwards raises,
+        # because by then the move is no longer legal in the current position.
+        self._last_san = self.board.san_and_push(move)
         return True
 
     def is_game_over(self) -> bool:
@@ -230,10 +331,7 @@ class ChessEngine(GameEngine):
         }
 
     def last_move_display(self) -> str:
-        # The server tracks the last SAN; we can reconstruct from board history
-        if self.board.move_stack:
-            return self.board.san(self.board.move_stack[-1])
-        return ""
+        return self._last_san
 
     def last_move_squares(self) -> tuple[str, str]:
         """Return (from_square, to_square) for UI highlighting."""
@@ -243,14 +341,18 @@ class ChessEngine(GameEngine):
         return "", ""
 
     def parse_move(self, content: str) -> str:
-        move, _say = _extract_json_move(content)
-        if move:
-            return move
-        # Try bare SAN regex
-        m = re.search(r'\b([KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[+#]?)\b', content)
-        if m:
-            return m.group(1)
-        return ""
+        """Turn a raw reply into a canonical SAN move, or "" if there isn't one.
+
+        Matching against the moves actually legal in this position (rather than
+        a SAN-shaped regex) is what keeps ordinary prose from being read as a
+        move, and what lets a bare UCI reply like "g1f3" be accepted — models
+        emit UCI regardless of what the prompt asked for.
+        """
+        raw, _say = parse_move_text(content, self.board)
+        if not raw:
+            return ""
+        move = resolve_move(self.board, raw)
+        return self.board.san(move) if move else raw
 
     def system_prompt(self, commentary: bool, player_color: str) -> str:
         if commentary:
