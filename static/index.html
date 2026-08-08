@@ -70,6 +70,12 @@
   .disc { width: 72%; height: 72%; border-radius: 50%; display: block; }
   .disc.b { background: radial-gradient(circle at 35% 30%, #444, #111); box-shadow: 0 1px 3px rgba(0,0,0,0.5); }
   .disc.w { background: radial-gradient(circle at 35% 30%, #fff, #ccc); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+  .cb-title { font-size: 1.2rem; font-weight: 700; color: var(--accent2); margin-bottom: 6px; text-align: center; }
+  .cb-verdict { font-size: 1rem; color: #fff; margin-bottom: 12px; text-align: center; }
+  .cb-card { background: #11131f; border: 1px solid #2a2d42; border-radius: 8px; padding: 10px; margin-bottom: 10px; overflow: auto; max-height: 40vh; }
+  .cb-card-head { font-weight: 600; color: var(--accent2); margin-bottom: 6px; font-size: 0.85rem; }
+  .cb-err { color: #ff6b6b; font-size: 0.75rem; white-space: pre-wrap; margin-bottom: 6px; }
+  .cb-code { font-family: ui-monospace, monospace; font-size: 0.72rem; color: #d4d4f0; white-space: pre-wrap; word-break: break-word; }
   .coord { position: absolute; font-size: 9px; color: rgba(0,0,0,0.45); }
   .coord.file { bottom: 1px; right: 3px; }
   .coord.rank { top: 1px; left: 3px; }
@@ -351,8 +357,12 @@
 
   <div class="group">
     <h3>MATCH</h3>
-    <div class="field"><label for="s-game">Game</label>
+    <div class="field"><label for="s-mode">Mode</label>
+      <select id="s-mode"><option value="game">Board Game</option><option value="code">Code Battle</option></select></div>
+    <div class="field" id="s-game-field"><label for="s-game">Game</label>
       <select id="s-game"><option value="chess">Chess</option><option value="othello">Othello</option></select></div>
+    <div class="field" id="s-problem-field" style="display:none"><label for="s-problem">Problem</label>
+      <select id="s-problem"><option value="">loading…</option></select></div>
     <div class="two">
       <div class="field"><label for="s-games">Games in series</label><input id="s-games" type="number" min="1" max="100"></div>
       <div class="field"><label for="s-maxplies">Ply limit</label><input id="s-maxplies" type="number" min="20" max="1000"></div>
@@ -592,9 +602,54 @@ function fenToSquares(fen) {
 }
 
 function renderBoard() {
+  const mode = (state.settings && state.settings.mode) || state.mode || "game";
+  if (mode === "code") return renderCodeBattle();
   const gameType = (state.settings && state.settings.game_type) || state.game_type || "chess";
   if (gameType === "othello") return renderOthelloBoard();
   return renderChessBoard();
+}
+
+function renderCodeBattle() {
+  const boardEl = $("board");
+  const cb = state.code_battle;
+  if (!cb) {
+    boardEl.replaceChildren();
+    boardEl.setAttribute("aria-label", "Code battle");
+    return;
+  }
+  const p0 = cb.player0, p1 = cb.player1;
+  const winner = cb.winner; // 0, 1, or -1 (draw)
+  const winLabel = winner === 0 ? p0.label : winner === 1 ? p1.label : "Draw";
+  const frag = document.createDocumentFragment();
+  const title = document.createElement("div");
+  title.className = "cb-title";
+  title.textContent = `${cb.title} — ${cb.difficulty}`;
+  frag.appendChild(title);
+  const verdict = document.createElement("div");
+  verdict.className = "cb-verdict";
+  verdict.textContent = `Winner: ${winLabel}`;
+  frag.appendChild(verdict);
+  for (const [i, p] of [[0, p0], [1, p1]]) {
+    const card = document.createElement("div");
+    card.className = "cb-card";
+    const head = document.createElement("div");
+    head.className = "cb-card-head";
+    head.textContent = `${p.label} — ${p.passed}/${p.total} tests${p.compile_error ? " · error" : ""} · ${p.runtime_ms}ms`;
+    card.appendChild(head);
+    if (p.compile_error) {
+      const err = document.createElement("pre");
+      err.className = "cb-err";
+      err.textContent = p.compile_error.slice(0, 300);
+      card.appendChild(err);
+    }
+    const pre = document.createElement("pre");
+    pre.className = "cb-code";
+    pre.textContent = p.solution || "(no solution)";
+    card.appendChild(pre);
+    frag.appendChild(card);
+  }
+  boardEl.replaceChildren(frag);
+  boardEl.setAttribute("aria-label", `Code battle: ${cb.title}`);
 }
 
 function renderChessBoard() {
@@ -730,7 +785,9 @@ function gatherSettings() {
   });
 
   return {
+    mode: $("s-mode").value || "game",
     game_type: $("s-game").value || "chess",
+    code_problem: $("s-problem").value || "two-sum",
     players,
     games: numOr($("s-games"), live.games ?? 4),
     max_plies: numOr($("s-maxplies"), live.max_plies ?? 200),
@@ -748,6 +805,26 @@ function personaFor(systemPrompt) {
     if (PERSONAS[key] === systemPrompt) return key;
   }
   return "custom";
+}
+
+function toggleModeFields(mode) {
+  $("s-game-field").style.display = mode === "game" ? "" : "none";
+  $("s-problem-field").style.display = mode === "code" ? "" : "none";
+}
+
+async function loadProblems() {
+  try {
+    const r = await fetch("/api/problems");
+    const d = await r.json();
+    const sel = $("s-problem");
+    const opts = (d.problems || []).map(p =>
+      `<option value="${p.slug}">${esc(p.title)} (${p.difficulty})</option>`).join("");
+    sel.innerHTML = opts;
+    const cur = (state && state.settings && state.settings.code_problem) || "two-sum";
+    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  } catch (e) {
+    $("s-problem").innerHTML = "<option value='two-sum'>Two Sum</option>";
+  }
 }
 
 function openDrawer() {
@@ -768,7 +845,10 @@ function openDrawer() {
     $(`s-p${i}-model`).dataset.current = p.model || "";
     updateKeyHint(i);
   }
+  $("s-mode").value = s.mode || "game";
+  toggleModeFields($("s-mode").value);
   $("s-game").value = s.game_type || "chess";
+  $("s-problem").value = s.code_problem || "two-sum";
   $("s-games").value = s.games;
   $("s-maxplies").value = s.max_plies;
   $("s-retries").value = s.retries;
@@ -779,6 +859,8 @@ function openDrawer() {
   $("drawer").classList.add("open");
   $("scrim").classList.add("show");
   loadProviders().then(() => { populateModels(0); populateModels(1); });
+  loadProblems();
+  $("s-mode").onchange = () => toggleModeFields($("s-mode").value);
 }
 
 function closeDrawer() {

@@ -33,6 +33,7 @@ import chess
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from games import create_engine, GAMES, GameEngine
+from codebattle import PROBLEMS as CODE_PROBLEMS, get_problem, judge as judge_code, decide_winner
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
@@ -143,6 +144,8 @@ class Settings:
     include_previous: bool = True
     speed_ms: int = 0          # delay between moves
     game_type: str = "chess"   # chess | othello
+    code_problem: str = "two-sum"  # slug of the code-battle problem
+    mode: str = "game"         # game | code
     prompt_template: str = (
         "You are {player}, playing a game of chess as {color} against {opponent}.\n"
         "This is game {gameNumber} of {totalGames}.\n"
@@ -203,6 +206,7 @@ class GameState:
     battle_log: list[dict] = field(default_factory=list)
     players: list[PlayerStats] = field(default_factory=lambda: [PlayerStats(), PlayerStats()])
     game_results: list[dict] = field(default_factory=list)
+    code_battle: Optional[dict] = None   # populated after a code battle
     total_cost: float = 0.0
     error: str = ""
 
@@ -290,6 +294,7 @@ class MindArenaEngine:
             "battle_log": st.battle_log[-200:],
             "players": [_ps_dict(p) for p in st.players],
             "game_results": st.game_results,
+            "code_battle": st.code_battle,
             "total_cost": st.total_cost,
             "error": st.error,
             "game_type": self.settings.game_type,
@@ -411,6 +416,12 @@ class MindArenaEngine:
         s.game_type = d.get("game_type", s.game_type)
         if s.game_type not in GAMES:
             s.game_type = "chess"
+        s.mode = d.get("mode", s.mode)
+        if s.mode not in ("game", "code"):
+            s.mode = "game"
+        s.code_problem = d.get("code_problem", s.code_problem)
+        if not get_problem(s.code_problem):
+            s.code_problem = "two-sum"
         if d.get("prompt_template"):
             s.prompt_template = d["prompt_template"]
 
@@ -526,27 +537,159 @@ class MindArenaEngine:
         )
         return move, (say if s.commentary else ""), usage
 
+    # -- code battle --------------------------------------------------------
+    async def _run_code_battle(self):
+        """Both players solve the same coding problem; the judge decides."""
+        s = self.settings
+        problem = get_problem(s.code_problem) or get_problem("two-sum")
+        self.state.game_no = 1
+        self.state.move_list = []
+        self.state.last_move = ""
+        self.state.last_say = ""
+        self.state.plies = 0
+        self.state.code_battle = None
+        await self._log("info", f"CODE BATTLE: {problem.title} ({problem.difficulty})")
+        await self._log("info", f"{s.players[0].label} vs {s.players[1].label}")
+
+        # Ask both players in parallel for their solutions.
+        results = await asyncio.gather(
+            self._request_code_solution(0, problem),
+            self._request_code_solution(1, problem),
+        )
+        sol0, sol1 = results
+
+        # Judge each.
+        r0 = judge_code(problem, sol0) if sol0 else None
+        r1 = judge_code(problem, sol1) if sol1 else None
+
+        if r0 is None or r1 is None:
+            # A player didn't produce code — the other wins by default.
+            winner = -1
+            if r0 is not None and r1 is None:
+                winner = 0
+            elif r1 is not None and r0 is None:
+                winner = 1
+            elif r0 is None and r1 is None:
+                winner = -1
+        else:
+            winner = decide_winner(r0, r1)
+
+        # Update stats.
+        p0, p1 = self.state.players[0], self.state.players[1]
+        if winner == 0:
+            p0.wins += 1; p1.losses += 1
+        elif winner == 1:
+            p1.wins += 1; p0.losses += 1
+        else:
+            p0.draws += 1; p1.draws += 1
+        self.state.series_score = f"{_points(p0)}–{_points(p1)}"
+
+        self.state.code_battle = {
+            "problem": problem.slug,
+            "title": problem.title,
+            "difficulty": problem.difficulty,
+            "player0": {
+                "label": s.players[0].label,
+                "solution": sol0,
+                "passed": r0.passed if r0 else 0,
+                "total": len(problem.tests),
+                "runtime_ms": round(r0.runtime_ms, 2) if r0 else 0,
+                "compile_error": (r0.compile_error if r0 else "no solution produced"),
+            },
+            "player1": {
+                "label": s.players[1].label,
+                "solution": sol1,
+                "passed": r1.passed if r1 else 0,
+                "total": len(problem.tests),
+                "runtime_ms": round(r1.runtime_ms, 2) if r1 else 0,
+                "compile_error": (r1.compile_error if r1 else "no solution produced"),
+            },
+            "winner": winner,
+        }
+        await self._log("info",
+            f"Code battle result: winner = {['P0','P1','draw'][winner]} "
+            f"({p0.wins}-{p1.wins})")
+        await self._broadcast_state()
+
+    async def _request_code_solution(self, player_idx: int, problem) -> str:
+        """Ask a player to write code for the problem. Returns source code."""
+        s = self.settings
+        p = s.players[player_idx]
+        prompt = (
+            f"You are {p.label}, competing in a coding battle against "
+            f"{s.players[1 - player_idx].label}.\n\n"
+            f"PROBLEM ({problem.difficulty}): {problem.title}\n\n"
+            f"{problem.description}\n\n"
+            f"You must write a Python function with this exact signature:\n"
+            f"    {problem.signature}\n\n"
+            f"Return ONLY the complete Python source code for your function — no "
+            f"explanations, no markdown fences. Just the code.\n\n"
+            f"Starter template:\n{problem.starter_code}"
+        )
+        system = (
+            "You are an expert competitive programmer. You write clean, correct, "
+            "efficient Python code. Respond with only the function definition — no "
+            "markdown, no explanation, no test code."
+        )
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": prompt}]
+        body = {
+            "model": p.model,
+            "messages": messages,
+            "temperature": p.temperature,
+            "max_tokens": 4000,
+        }
+        url = _endpoint(p.base_url or s.base_url, "/chat/completions")
+        headers = {"Authorization": f"Bearer {self._resolve_key(p)}",
+                   "Content-Type": "application/json"}
+        await self._log("thinking", f"{p.label}: writing solution…")
+        try:
+            r = await self._http.post(url, json=body, headers=headers)
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            await self._log("error", f"{p.label}: network error: {e}")
+            return ""
+        if r.status_code != 200:
+            await self._log("error", f"{p.label}: HTTP {r.status_code}: {r.text[:200]}")
+            return ""
+        try:
+            data = r.json()
+            content = data["choices"][0]["message"]["content"] or ""
+        except (ValueError, KeyError, IndexError) as e:
+            await self._log("error", f"{p.label}: malformed response")
+            return ""
+        # Strip markdown fences if the model wrapped in them anyway.
+        content = content.strip()
+        if content.startswith("```"):
+            import re
+            content = re.sub(r"^```(?:python)?\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+        await self._log("move", f"{p.label}: submitted solution ({len(content)} chars)")
+        return content
+
     # -- series loop --------------------------------------------------------
     async def _run_series(self):
         s = self.settings
         self.state.status = "LIVE"
         await self._broadcast_state()
         try:
-            for g in range(1, s.games + 1):
-                if self._stop.is_set():
-                    break
-                await self._pause.wait()
-                if self._stop.is_set():
-                    break
-                self.state.game_no = g
-                # Colours alternate: player 0 has white in odd games.
-                white_idx = 0 if g % 2 == 1 else 1
-                self.state.players[white_idx].color = "white"
-                self.state.players[1 - white_idx].color = "black"
-                await self._log("info",
-                    f"Game {g}/{s.games}: {s.players[white_idx].label} (W) vs {s.players[1 - white_idx].label} (B)")
-                await self._play_game(g, white_idx)
-                await self._broadcast_state()
+            if s.mode == "code":
+                await self._run_code_battle()
+            else:
+                for g in range(1, s.games + 1):
+                    if self._stop.is_set():
+                        break
+                    await self._pause.wait()
+                    if self._stop.is_set():
+                        break
+                    self.state.game_no = g
+                    # Colours alternate: player 0 has white in odd games.
+                    white_idx = 0 if g % 2 == 1 else 1
+                    self.state.players[white_idx].color = "white"
+                    self.state.players[1 - white_idx].color = "black"
+                    await self._log("info",
+                        f"Game {g}/{s.games}: {s.players[white_idx].label} (W) vs {s.players[1 - white_idx].label} (B)")
+                    await self._play_game(g, white_idx)
+                    await self._broadcast_state()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -824,7 +967,7 @@ def _settings_dict(s: Settings) -> dict:
         "retries": s.retries, "network_retries": s.network_retries,
         "max_tokens": s.max_tokens, "commentary": s.commentary,
         "include_previous": s.include_previous, "speed_ms": s.speed_ms,
-        "game_type": s.game_type,
+        "game_type": s.game_type, "mode": s.mode, "code_problem": s.code_problem,
         "prompt_template": s.prompt_template,
     }
 
@@ -1101,6 +1244,13 @@ async def models_for(req: dict):
 @app.get("/api/state")
 async def get_state():
     return engine.full_snapshot()
+
+@app.get("/api/problems")
+async def list_problems():
+    return {"problems": [
+        {"slug": p.slug, "title": p.title, "difficulty": p.difficulty}
+        for p in CODE_PROBLEMS
+    ]}
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
