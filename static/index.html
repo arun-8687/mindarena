@@ -72,6 +72,9 @@
   .disc.w { background: radial-gradient(circle at 35% 30%, #fff, #ccc); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
   /* ---- code battle ---- */
   body.mode-code .board-wrap, body.mode-code .say { display: none; }
+  /* Turn speed is the delay between board moves; it does nothing in a code
+     battle, and on a phone that row costs a seventh of the screen. */
+  body.mode-code .controls label { display: none; }
   body.mode-code .stage { justify-content: flex-start; align-items: stretch;
     overflow-y: auto; padding: 12px 16px; }
   .codearena { width: 100%; max-width: 1100px; margin: 0 auto; }
@@ -287,6 +290,47 @@
     .cards { grid-template-columns: 1fr; }
     .card .pmodel { font-size: 10px; }
   }
+  /* ---- touch ergonomics ----
+     Phones and the narrow layout shrink a lot of chrome to fit. These rules run
+     after that and put the interactive bits back up to a comfortable size:
+     44px is the smallest reliable touch target, and anything under 11px is hard
+     to read at arm's length. Applied on coarse pointers too, so a touchscreen
+     laptop gets the same treatment. */
+  @media (max-width: 1024px), (pointer: coarse) {
+    .banner button { min-height: 44px; padding: 10px 12px; font-size: 12px; }
+    .banner .status { font-size: 11px; padding: 5px 10px; }
+    .controls { gap: 8px; padding: 8px; }
+    .controls button { min-height: 44px; padding: 10px 14px; font-size: 13px; }
+    .controls label { gap: 10px; font-size: 11px; }
+    .controls input[type=range] { height: 44px; }
+    .controls input[type=range]::-webkit-slider-thumb { width: 22px; height: 22px; }
+    .controls input[type=range]::-moz-range-thumb { width: 22px; height: 22px; }
+
+    .drawer .close { min-width: 44px; min-height: 44px; top: 8px; right: 8px;
+      font-size: 22px; display: flex; align-items: center; justify-content: center; }
+    .drawer .field input, .drawer .field select { min-height: 44px; font-size: 15px; }
+    .drawer .actions button { min-height: 48px; font-size: 14px; }
+    .drawer .field label, .drawer .hint { font-size: 12px; }
+    #s-bank-refresh { min-height: 44px; width: 100%; }
+
+    .stage .player .color { font-size: 11px; letter-spacing: 2px; }
+    .stage .vs .format, .stage .vs .round { font-size: 11px; }
+    .card .row, .card .pcolor { font-size: 11px; }
+    .card .pmodel { font-size: 11px; }
+    .log { font-size: 11px; }
+    .badge { font-size: 11px; padding: 3px 9px; }
+
+    .cb-toggle { min-height: 44px; font-size: 13px; }
+    details.cb-src summary { min-height: 44px; display: flex; align-items: center;
+      font-size: 13px; }
+    .cb-side .who b { font-size: 15px; }
+    .cb-statement { font-size: 13.5px; }
+    .cb-facts, .cb-row { font-size: 12px; }
+    .cb-round-no, .cb-examples .lbl, .cb-side .model,
+    .cb-history h4, .cb-side .who .tag { font-size: 11px; }
+    .cb-dots span { width: 14px; height: 14px; }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; transition: none !important; }
   }
